@@ -23,30 +23,12 @@ results/raw_predictions/
 *.log
 logs/
 
-# LaTeX build artefacts
-paper/*.aux
-paper/*.bbl
-paper/*.blg
-paper/*.log
-paper/*.out
-paper/*.toc
-paper/*.fdb_latexmk
-paper/*.fls
-paper/*.synctex.gz
+# Paper (entire directory excluded)
+paper/
 
-# Keep JSON results, PDFs, LaTeX source + bib
+# Keep JSON results and figure PDFs
 !results/**/*.json
 !figures/**/*.pdf
-!paper/**/*.tex
-!paper/**/*.bib
-!paper/**/*.pdf
-# Paper build artifacts
-paper/*.pdf
-paper/*.aux
-paper/*.log
-paper/*.out
-paper/*.synctex.gz
-paper/figures/
 
 # Submission archives
 *.zip
