@@ -1,0 +1,104 @@
+{
+  "model": "Qwen/Qwen3-8B",
+  "task": "LaMP-2",
+  "layer_idx": 13,
+  "variant": "fact",
+  "operator": {
+    "name": "proj_nuisance",
+    "params": {
+      "pca_k": 10,
+      "removed_var_fraction": 0.7383629528536801,
+      "preserved_var_fraction": 0.26161124941002123,
+      "mean_norm_before": 15.148225784301758,
+      "mean_norm_after": 8.764588356018066
+    }
+  },
+  "alphas": [
+    0.0,
+    0.5,
+    1.0,
+    1.5,
+    2.0
+  ],
+  "n_users": 323,
+  "metric": "accuracy",
+  "results": [
+    {
+      "alpha": 0.0,
+      "metric": "accuracy",
+      "value": {
+        "accuracy": 0.5820433436532507,
+        "f1_weighted": 0.5929127692381144,
+        "f1_macro": 0.4066048815413199,
+        "precision_weighted": 0.6217289422922355,
+        "precision_macro": 0.4022163436165994,
+        "recall_weighted": 0.5820433436532507,
+        "recall_macro": 0.4356027600717866
+      },
+      "wall_seconds": 64.8942608833313,
+      "num_eval": 323
+    },
+    {
+      "alpha": 0.5,
+      "metric": "accuracy",
+      "value": {
+        "accuracy": 0.5789473684210527,
+        "f1_weighted": 0.5923135441069526,
+        "f1_macro": 0.3836105096483164,
+        "precision_weighted": 0.6247207734407567,
+        "precision_macro": 0.3792776084792891,
+        "recall_weighted": 0.5789473684210527,
+        "recall_macro": 0.4110740416236457
+      },
+      "wall_seconds": 65.1674337387085,
+      "num_eval": 323
+    },
+    {
+      "alpha": 1.0,
+      "metric": "accuracy",
+      "value": {
+        "accuracy": 0.56656346749226,
+        "f1_weighted": 0.5807216771728506,
+        "f1_macro": 0.39683861689653394,
+        "precision_weighted": 0.6176513440623167,
+        "precision_macro": 0.39663309655758483,
+        "recall_weighted": 0.56656346749226,
+        "recall_macro": 0.43145052751247437
+      },
+      "wall_seconds": 64.98377346992493,
+      "num_eval": 323
+    },
+    {
+      "alpha": 1.5,
+      "metric": "accuracy",
+      "value": {
+        "accuracy": 0.5603715170278638,
+        "f1_weighted": 0.5778424679566531,
+        "f1_macro": 0.36231325248105134,
+        "precision_weighted": 0.6205056367669971,
+        "precision_macro": 0.36232922661190914,
+        "recall_weighted": 0.5603715170278638,
+        "recall_macro": 0.3966845753222092
+      },
+      "wall_seconds": 63.88314127922058,
+      "num_eval": 323
+    },
+    {
+      "alpha": 2.0,
+      "metric": "accuracy",
+      "value": {
+        "accuracy": 0.5386996904024768,
+        "f1_weighted": 0.563013250528232,
+        "f1_macro": 0.26727014551040584,
+        "precision_weighted": 0.6119259932990914,
+        "precision_macro": 0.2735846127867404,
+        "recall_weighted": 0.5386996904024768,
+        "recall_macro": 0.28435146976916886
+      },
+      "wall_seconds": 63.02928900718689,
+      "num_eval": 323
+    }
+  ],
+  "vectors_npz": "/home/zjkarina/persona-vectors-icml2026/results/positive_control/vectors_Qwen3-8B_LaMP-2.npz",
+  "timestamp": "2026-05-07T20:38:37.835547"
+}

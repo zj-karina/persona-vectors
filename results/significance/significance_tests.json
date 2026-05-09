@@ -1,0 +1,92 @@
+{
+  "seed": 42,
+  "n_boot": 10000,
+  "tests": [
+    {
+      "label": "LaMP-2: ZS vs steering(template) [variance]",
+      "n": 323,
+      "acc_zs": 0.5820433436532507,
+      "acc_method": 0.5572755417956656,
+      "delta": -0.02476780185758514,
+      "discordant_zs_only": 17,
+      "discordant_method_only": 9,
+      "mcnemar_p_exact": 0.16863754391670227
+    },
+    {
+      "label": "LaMP-2: ZS vs steering(fact) [variance]",
+      "n": 323,
+      "acc_zs": 0.5820433436532507,
+      "acc_method": 0.5356037151702786,
+      "delta": -0.04643962848297214,
+      "discordant_zs_only": 40,
+      "discordant_method_only": 25,
+      "mcnemar_p_exact": 0.08168153394154003
+    },
+    {
+      "label": "LaMP-2: ZS vs ICL(K=3)",
+      "n": 323,
+      "acc_zs": 0.5820433436532507,
+      "acc_method": 0.5789473684210527,
+      "delta": -0.0030959752321981426,
+      "discordant_zs_only": 30,
+      "discordant_method_only": 29,
+      "mcnemar_p_exact": 1.0
+    },
+    {
+      "label": "LaMP-2: ZS vs ICL(K=5)",
+      "n": 323,
+      "acc_zs": 0.5820433436532507,
+      "acc_method": 0.5758513931888545,
+      "delta": -0.006191950464396285,
+      "discordant_zs_only": 29,
+      "discordant_method_only": 27,
+      "mcnemar_p_exact": 0.8938530948350216
+    },
+    {
+      "label": "LaMP-2: ZS vs ICL(K=6)",
+      "n": 323,
+      "acc_zs": 0.5820433436532507,
+      "acc_method": 0.5820433436532507,
+      "delta": 0.0,
+      "discordant_zs_only": 32,
+      "discordant_method_only": 32,
+      "mcnemar_p_exact": 1.0
+    },
+    {
+      "label": "LaMP-7: ZS vs steering(template) [variance]",
+      "n": 1497,
+      "rouge_zs": 0.426223754857669,
+      "rouge_method": 0.4279317166332651,
+      "delta": 0.0017079617755960807,
+      "boot_ci95": [
+        -0.00040936540786059704,
+        0.003783071519458068
+      ],
+      "boot_p_two_sided": 0.1104
+    },
+    {
+      "label": "LaMP-7: ZS vs steering(fact) [variance]",
+      "n": 1497,
+      "rouge_zs": 0.426223754857669,
+      "rouge_method": 0.4204881919489964,
+      "delta": -0.00573556290867262,
+      "boot_ci95": [
+        -0.01053390708062731,
+        -0.0010112109926337627
+      ],
+      "boot_p_two_sided": 0.0174
+    },
+    {
+      "label": "LaMP-7: ZS vs ICL(K=3)",
+      "n": 1497,
+      "rouge_zs": 0.426223754857669,
+      "rouge_method": 0.4279443197385409,
+      "delta": 0.001720564880871823,
+      "boot_ci95": [
+        -0.003149295652580867,
+        0.006385101694899697
+      ],
+      "boot_p_two_sided": 0.4866
+    }
+  ]
+}

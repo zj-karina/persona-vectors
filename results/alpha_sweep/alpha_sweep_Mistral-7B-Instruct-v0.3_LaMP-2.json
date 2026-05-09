@@ -1,0 +1,128 @@
+{
+  "model": "mistralai/Mistral-7B-Instruct-v0.3",
+  "task": "LaMP-2",
+  "n_samples": 100,
+  "layer_idx": 14,
+  "seed": 42,
+  "alphas": [
+    0.0,
+    0.5,
+    1.0,
+    2.0
+  ],
+  "results": [
+    {
+      "alpha": 0.0,
+      "metric": "accuracy",
+      "value": {
+        "accuracy": 0.64,
+        "f1_weighted": 0.6758529907952763,
+        "f1_macro": 0.2268956995294048,
+        "precision_weighted": 0.834884531590414,
+        "precision_macro": 0.325199709513435,
+        "recall_weighted": 0.64,
+        "recall_macro": 0.2209641817692665
+      },
+      "wall_seconds": 12.752553462982178,
+      "sample_preds": [
+        "The article rel",
+        "crime",
+        "crime",
+        "health",
+        "The article rel"
+      ],
+      "sample_refs": [
+        "politics",
+        "crime",
+        "crime",
+        "politics",
+        "politics"
+      ]
+    },
+    {
+      "alpha": 0.5,
+      "metric": "accuracy",
+      "value": {
+        "accuracy": 0.21,
+        "f1_weighted": 0.29273522267206475,
+        "f1_macro": 0.10554552060624935,
+        "precision_weighted": 0.6583333333333334,
+        "precision_macro": 0.2094017094017094,
+        "recall_weighted": 0.21,
+        "recall_macro": 0.08965469558689897
+      },
+      "wall_seconds": 14.888843297958374,
+      "sample_preds": [
+        "The article rel",
+        "The article rel",
+        "The category for",
+        "health",
+        "The article rel"
+      ],
+      "sample_refs": [
+        "politics",
+        "crime",
+        "crime",
+        "politics",
+        "politics"
+      ]
+    },
+    {
+      "alpha": 1.0,
+      "metric": "accuracy",
+      "value": {
+        "accuracy": 0.11,
+        "f1_weighted": 0.14129530600118834,
+        "f1_macro": 0.10740893093834271,
+        "precision_weighted": 0.20685714285714288,
+        "precision_macro": 0.15164835164835166,
+        "recall_weighted": 0.11,
+        "recall_macro": 0.08566433566433568
+      },
+      "wall_seconds": 15.560141324996948,
+      "sample_preds": [
+        "The category for",
+        "The category for",
+        "The category for",
+        "The category for",
+        "The category for"
+      ],
+      "sample_refs": [
+        "politics",
+        "crime",
+        "crime",
+        "politics",
+        "politics"
+      ]
+    },
+    {
+      "alpha": 2.0,
+      "metric": "accuracy",
+      "value": {
+        "accuracy": 0.01,
+        "f1_weighted": 0.018461538461538463,
+        "f1_macro": 0.007326007326007326,
+        "precision_weighted": 0.12,
+        "precision_macro": 0.047619047619047616,
+        "recall_weighted": 0.01,
+        "recall_macro": 0.003968253968253968
+      },
+      "wall_seconds": 15.600581407546997,
+      "sample_preds": [
+        "The article does",
+        "The article rel",
+        "The article does",
+        "The article rel",
+        "The article does"
+      ],
+      "sample_refs": [
+        "politics",
+        "crime",
+        "crime",
+        "politics",
+        "politics"
+      ]
+    }
+  ],
+  "timestamp": "2026-05-08T12:20:26.276014"
+}

@@ -1,13 +1,16 @@
 \begin{table}[t]
 \centering\small
-\begin{tabular}{llcccccc}
+\caption{Layer search on LaMP-2 ($n{=}50$, $\alpha{=}1.0$, stride $2$).
+At the optimal layer, persona steering matches but does not exceed
+zero-shot accuracy on either backbone. See
+App.~\ref{app:layer_search} for the full per-layer table.}
+\label{tab:layer_search}
+\begin{tabular}{lcccc}
 \toprule
-Model & Task & $L$ & best & frac & metric@best & metric@ZS & $\Delta$ \\
+Model      & Best $L$ & frac & Acc @ best & ZS \\
 \midrule
-Qwen3-14B & LaMP-2 & 40 & 10 & 0.25 & 0.760 & 0.760 & +0.000 \\
-Qwen3-8B & LaMP-2 & 36 & 13 & 0.36 & 0.740 & 0.740 & +0.000 \\
+Qwen3-8B   & $13$     & $0.36$ & $0.740$ & $0.740$ \\
+Qwen3-14B  & $10$     & $0.25$ & $0.760$ & $0.760$ \\
 \bottomrule
 \end{tabular}
-\caption{Optimal extraction layer per (model, task), and effect over zero-shot.}
-\label{tab:layer_search}
 \end{table}

@@ -1,0 +1,225 @@
+{
+  "model": "Qwen/Qwen3-8B",
+  "task": "LaMP-7",
+  "layer_idx": 13,
+  "variant": "template",
+  "taus": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "alphas": [
+    0.0,
+    0.5,
+    1.0,
+    2.0
+  ],
+  "n_users": 200,
+  "metric": "rouge",
+  "grid": [
+    {
+      "tau": 0.0,
+      "alpha": 0.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 341.3265838623047
+    },
+    {
+      "tau": 0.0,
+      "alpha": 0.5,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4742623741240184,
+        "ROUGE-L": 0.41855755653536875
+      },
+      "wall_seconds": 344.1973326206207
+    },
+    {
+      "tau": 0.0,
+      "alpha": 1.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.47407922394086816,
+        "ROUGE-L": 0.4183927213705336
+      },
+      "wall_seconds": 340.4070899486542
+    },
+    {
+      "tau": 0.0,
+      "alpha": 2.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.47379906657224213,
+        "ROUGE-L": 0.41842784541252265
+      },
+      "wall_seconds": 339.2556948661804
+    },
+    {
+      "tau": 0.25,
+      "alpha": 0.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 333.5590851306915
+    },
+    {
+      "tau": 0.25,
+      "alpha": 0.5,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 335.69398498535156
+    },
+    {
+      "tau": 0.25,
+      "alpha": 1.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 335.087993144989
+    },
+    {
+      "tau": 0.25,
+      "alpha": 2.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 335.3708827495575
+    },
+    {
+      "tau": 0.5,
+      "alpha": 0.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 337.44840455055237
+    },
+    {
+      "tau": 0.5,
+      "alpha": 0.5,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 334.1802022457123
+    },
+    {
+      "tau": 0.5,
+      "alpha": 1.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 332.8857309818268
+    },
+    {
+      "tau": 0.5,
+      "alpha": 2.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 333.67453694343567
+    },
+    {
+      "tau": 0.75,
+      "alpha": 0.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 330.8312101364136
+    },
+    {
+      "tau": 0.75,
+      "alpha": 0.5,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 332.3117833137512
+    },
+    {
+      "tau": 0.75,
+      "alpha": 1.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 332.64202904701233
+    },
+    {
+      "tau": 0.75,
+      "alpha": 2.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 332.41622042655945
+    },
+    {
+      "tau": 1.0,
+      "alpha": 0.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 330.3524959087372
+    },
+    {
+      "tau": 1.0,
+      "alpha": 0.5,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 332.68696665763855
+    },
+    {
+      "tau": 1.0,
+      "alpha": 1.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 332.17382168769836
+    },
+    {
+      "tau": 1.0,
+      "alpha": 2.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 332.18093037605286
+    }
+  ],
+  "vectors_npz": "/home/zjkarina/persona-vectors-icml2026/results/positive_control/vectors_Qwen3-8B_LaMP-7.npz",
+  "timestamp": "2026-05-03T21:22:46.130708"
+}

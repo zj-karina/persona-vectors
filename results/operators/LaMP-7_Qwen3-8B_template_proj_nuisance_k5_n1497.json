@@ -1,0 +1,79 @@
+{
+  "model": "Qwen/Qwen3-8B",
+  "task": "LaMP-7",
+  "layer_idx": 13,
+  "variant": "template",
+  "operator": {
+    "name": "proj_nuisance",
+    "params": {
+      "pca_k": 5,
+      "removed_var_fraction": 0.6144168880666103,
+      "preserved_var_fraction": 0.38556037286791356,
+      "mean_norm_before": 6.3218488693237305,
+      "mean_norm_after": 3.9162919521331787
+    }
+  },
+  "alphas": [
+    0.0,
+    0.5,
+    1.0,
+    1.5,
+    2.0
+  ],
+  "n_users": 1497,
+  "metric": "rouge",
+  "results": [
+    {
+      "alpha": 0.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.480312780654249,
+        "ROUGE-L": 0.42622375485766895
+      },
+      "wall_seconds": 2449.534280061722,
+      "num_eval": 1497
+    },
+    {
+      "alpha": 0.5,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4807682940781868,
+        "ROUGE-L": 0.42691841043252166
+      },
+      "wall_seconds": 2458.3906931877136,
+      "num_eval": 1497
+    },
+    {
+      "alpha": 1.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.48012928836701335,
+        "ROUGE-L": 0.42628906641335834
+      },
+      "wall_seconds": 2460.836105108261,
+      "num_eval": 1497
+    },
+    {
+      "alpha": 1.5,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4797554496151384,
+        "ROUGE-L": 0.425975629247472
+      },
+      "wall_seconds": 2429.940598487854,
+      "num_eval": 1497
+    },
+    {
+      "alpha": 2.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4788765146156605,
+        "ROUGE-L": 0.4248543413392771
+      },
+      "wall_seconds": 2431.45725440979,
+      "num_eval": 1497
+    }
+  ],
+  "vectors_npz": "/home/zjkarina/persona-vectors-icml2026/results/positive_control/vectors_Qwen3-8B_LaMP-7.npz",
+  "timestamp": "2026-05-08T02:25:08.256790"
+}

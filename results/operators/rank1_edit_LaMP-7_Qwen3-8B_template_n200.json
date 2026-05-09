@@ -1,0 +1,56 @@
+{
+  "model": "Qwen/Qwen3-8B",
+  "task": "LaMP-7",
+  "layer_idx": 13,
+  "variant": "template",
+  "alphas": [
+    0.0,
+    0.5,
+    1.0,
+    2.0
+  ],
+  "n_users": 200,
+  "metric": "rouge",
+  "k_star_norm": 14.346709251403809,
+  "v_mean_norm": 5.4215545654296875,
+  "results": [
+    {
+      "alpha": 0.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4743001569294482,
+        "ROUGE-L": 0.41880348413717877
+      },
+      "wall_seconds": 362.2466297149658
+    },
+    {
+      "alpha": 0.5,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.47460747335622533,
+        "ROUGE-L": 0.4191382250472628
+      },
+      "wall_seconds": 357.57515501976013
+    },
+    {
+      "alpha": 1.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.47563909054855685,
+        "ROUGE-L": 0.42037392387224726
+      },
+      "wall_seconds": 351.9332983493805
+    },
+    {
+      "alpha": 2.0,
+      "metric": "rouge",
+      "value": {
+        "ROUGE-1": 0.4776000789388836,
+        "ROUGE-L": 0.4215301924023768
+      },
+      "wall_seconds": 350.17997217178345
+    }
+  ],
+  "vectors_npz": "/home/zjkarina/persona-vectors-icml2026/results/positive_control/vectors_Qwen3-8B_LaMP-7.npz",
+  "timestamp": "2026-05-03T20:01:31.519579"
+}

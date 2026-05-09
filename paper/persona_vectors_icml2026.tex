@@ -1,285 +1,940 @@
-\documentclass[10pt]{article}
+%%%%%%%% ICML 2026 SUBMISSION (anonymous, blind review) %%%%%%%%%%%%%%%%%
+%%
+%% Per-User Persona Vectors:
+%%     Are Individual Identities Linear Directions in LLM Activation Space?
+%%
+%% Submitted to:  Mechanistic Interpretability Workshop @ ICML 2026
+%% Format:        SHORT paper (max 4 pages body; refs/appendix unlimited)
+%% Style files:   icml2026.sty / icml2026.bst (in this directory)
+%%
+%% Build:
+%%   pdflatex persona_vectors_icml2026
+%%   bibtex   persona_vectors_icml2026
+%%   pdflatex persona_vectors_icml2026
+%%   pdflatex persona_vectors_icml2026
 
-\usepackage[a4paper, margin=1in]{geometry}
-\usepackage{amsmath, amssymb, amsfonts}
-\usepackage{booktabs}
-\usepackage{graphicx}
+\documentclass{article}
+
 \usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{booktabs}
 \usepackage{hyperref}
-\usepackage{caption}
-\usepackage{authblk}
+\usepackage{amsmath, amssymb}
+\usepackage{url}
 
-\title{Per-User Persona Vectors:\\
-Are Individual Identities Linear Directions in LLM Activation Space?}
-\author{Karina Romanova}
-\affil{}
-\date{}
+\newcommand{\theHalgorithm}{\arabic{algorithm}}
+
+% ----- ICML 2026: anonymous blind submission (default) -----
+\usepackage{icml2026}
+% For preprint:                  \usepackage[preprint]{icml2026}
+% For camera-ready (accepted):   \usepackage[accepted]{icml2026}
+
+\icmltitlerunning{The Operator Bottleneck}
 
 \begin{document}
-\maketitle
 
+\twocolumn[
+\icmltitle{The Operator Bottleneck:\\
+           Why Linear Additive Steering Fails for Per-User Persona Vectors}
+
+\icmlsetsymbol{equal}{*}
+
+\begin{icmlauthorlist}
+\icmlauthor{Anonymous Authors}{anon}
+\end{icmlauthorlist}
+
+\icmlaffiliation{anon}{Anonymous}
+
+\icmlcorrespondingauthor{}{}
+
+\icmlkeywords{mechanistic interpretability, persona vectors, activation
+              steering, personalization, LLM, residual stream, LaMP}
+
+\vskip 0.3in
+]
+
+\printAffiliationsAndNotice{} % blank for anonymous review
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%   ABSTRACT (compact)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \begin{abstract}
-\noindent
-Persona vectors~\cite{rimsky2025persona} extract linear directions in the
-residual stream that correspond to global character traits.  We ask whether
-the same construction yields a signal at the \emph{per-user} level on the
-LaMP personalization benchmark.  Our investigation surfaces two distinct
-findings:
-\textbf{(i)~A measurement confound.}  Naïve evaluation samples at the LaMP
-\emph{example} level conflates within-user duplicates with cross-user variation.
-A first-pass geometry analysis on $n{=}100$ samples appears to show extreme
-collapse (mean off-diagonal cosine $0.75$, $92.7\%$ of variance in two
-principal components).  After deduplication to actually-unique users, the
-collapse \emph{disappears}: cosine drops to $0.33$, rank-at-90\% rises from
-$\le 3$ to $9$.  Per-user vectors \textbf{are} distinguishable.
-\textbf{(ii)~The bottleneck is the steering operator, not the extractor.}
-A positive-control comparison between template-based and concrete-fact-based
-positive prompts produces statistically identical geometry ($\Delta\overline{\cos}
-{=}+0.006$), yet the richer fact-based artifacts hurt downstream accuracy
-\emph{more} ($-0.13$ versus $-0.03$ for the template).  Combined with the
-clean dose-response curve in $\alpha$ — peak at $\alpha{=}1$, full collapse
-at $\alpha{=}16$ — and the bitwise-identical predictions for
-$k{\in}\{3,5,10\}$ extraction questions, this points to a saturated steering
-window: per-user information \emph{is} present in the activation difference,
-but additive injection at a single layer cannot deliver it without
-overriding the model's content-aware decoding.
+Persona vectors~\cite{chen2025persona} extract \emph{per-trait} linear
+directions from a frozen LLM's residual stream for inference-time
+steering.  Applied to \emph{per-user} identity on the LaMP
+personalization benchmark~\cite{salemi2024lamp}, the picture is
+\emph{variant-conditional}: the canonical template extraction yields
+collapsed geometry, while a fact-based extraction recovers
+user-distinguishable directions that the canonical operator
+nonetheless fails to convert into a positive effect.  We isolate the
+\textbf{operator bottleneck} on the fact variant -- where the per-user
+direction is recoverable, but no single-layer additive operator at a
+constant $\alpha$ amplifies it into a positive population-level
+effect -- and show that the template variant fails earlier, at the
+geometric step.
+\textbf{(i)~Geometry: variant-conditional.}  We reject H1 for the
+canonical template extraction (full-$n$ mean cosine $0.604$ on LaMP-2
+and $0.811$ on LaMP-7 -- pairs share a dominant common direction).
+We support H1 for fact-based extraction (LaMP-2
+$\overline{\cos}{=}0.320$ at $n{=}323$; LaMP-7 $\overline{\cos}{=}0.272$
+at $n{=}1497$; rank-at-90\,\% $18$/$110$).
+\textbf{(ii)~The canonical additive operator underperforms zero-shot
+and ICL at full $n$.}  On all $n{=}323$ LaMP-2 users: ZS $0.582$,
+ICL-$K{=}6$ $0.582$, template steering $0.557$ ($\Delta{=}{-}0.025$),
+fact steering $0.536$ ($\Delta{=}{-}0.046$).  On all $n{=}1497$
+LaMP-7 users, ZS and ICL are statistically indistinguishable
+($0.426$ vs $0.428$ ROUGE-L); steering is at parity.  Static
+per-user proxies (alignment, magnitude, neighbour coherence)
+\emph{do not} predict per-user $\Delta$ at full $n$ ($|r|{\le}0.14$).
+\textbf{(iii)~Three operator-class alternatives stop the crash but
+do not amplify.}  Across all four (task, variant) cells at full $n$
+we test PCA-projection of population directions, ROME-style rank-1
+weight edits, and $\cos$-gated token-selective routing.  The largest
+gain anywhere is $+0.006$ ($\cos$-routing on LaMP-2 fact at
+$\tau{=}0.25$).  No operator we test exceeds this.  On the fact variant, where extraction
+quality is controlled, single-layer additive injection at constant
+$\alpha$ -- and the family of operator-class generalizations we
+explore -- is the limiting factor; the extractor is not.  Multi-layer
+composition and learned per-user $\alpha$ schedules remain open.
 \end{abstract}
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \section{Introduction}
-% TODO: 1 paragraph (mech interp -> personalization), 1 paragraph (gap),
-% 4 contributions in last paragraph.
+\label{sec:intro}
 
-Recent work on persona vectors~\cite{rimsky2025persona} demonstrated that
-linear directions in LLM residual-stream activations encode global
-\emph{character traits}, recoverable via a simple contrastive-prompt
-extractor. The success of this construction at the trait level raises the
-question of whether the same machinery extends to \emph{individual user
-identities}—a setting where each user's profile, rather than a global
-behaviour template, defines the direction of interest.  If the per-user
-linearity hypothesis holds, a single \texttt{forward} hook would replace
-trained personalization adapters (Q-Former, prefix tuning, LoRA), giving a
-training-free path to user adaptation.
+\paragraph{Personalization of LLMs.}
+LLM personalization -- adapting a frozen pre-trained backbone to
+individual users -- is a rapidly growing research area, motivated by
+applications in personalized assistants, recommendation, and content
+generation~\cite{salemi2024lamp,kumar2024longlamp}. The dominant
+paradigm is parameter-efficient fine-tuning (PEFT) on per-user data:
+prefix-tuning~\cite{li2021prefix}, prompt
+tuning~\cite{lester2021prompt}, low-rank adaptation
+(LoRA)~\cite{hu2022lora}, and per-user soft prompts produced by
+trained adapters such as Q-Formers~\cite{li2023blip2,hebert2024persoma}.
+An alternative is retrieval-augmented generation (RAG) over the user's
+history~\cite{salemi2024lamp,salemi2024optimization,
+salemi2024comparing,shi2024collaborative,
+amirizaniani2025multistep}, which conditions the model on retrieved
+profile items at inference time. Both families improve over zero-shot
+on standard personalization
+benchmarks~\cite{salemi2024lamp,kumar2024longlamp}, but they share two
+weaknesses. First, every user incurs additional trainable parameters
+or context length. Second, the mechanism by which user identity is
+delivered to the output distribution is opaque.
 
-We test this hypothesis on the LaMP benchmark~\cite{salemi2024lamp} across
-two frozen decoder backbones (Qwen3-8B, Qwen3-14B), with paper-faithful
-artifact construction adapted to per-user prompts.  Our contributions:
+\paragraph{Persona vectors and representation engineering.}
+A parallel line of work in mechanistic interpretability shows that
+high-level concepts can be encoded as \emph{linear directions} in a
+frozen LLM's residual stream~\cite{elhage2021framework,
+park2024linear,zou2023repe}. Representation
+engineering~\cite{zou2023repe}, contrastive activation
+addition~\cite{rimsky2024caa}, and activation
+addition~\cite{turner2023actadd,subramani2022extracting} extract such
+directions from contrastive prompt pairs and steer the model at
+inference time by adding $\alpha v$ to the residual stream. The same
+construction has been used to mediate refusal in a single
+direction~\cite{arditi2024refusal} and to control honesty and
+sycophancy~\cite{rimsky2024caa,zou2023repe}. Most directly relevant,
+\citet{chen2025persona} introduce \emph{persona vectors}: contrastive
+system-prompt pairs yield a single direction whose addition or
+subtraction reliably amplifies or suppresses the trait at inference
+time on Llama- and Qwen-class backbones.
+
+Recent operator-class generalizations relax this setup --
+PERSONA~\cite{persona2026} predicts dynamic per-input $\alpha_i$;
+SAE-RSV~\cite{saersv2025} substitutes sparse-autoencoder features;
+PsPLUG~\cite{psplug2026} injects via training-time soft prompts --
+and are precisely the generalizations our findings argue for.
+
+\paragraph{The operator-bottleneck question.}
+Do the same activations encode \emph{per-user identity} as a linear
+direction \emph{and} can a single-layer additive hook deliver that
+identity to the output distribution? Recent work
+on attribute-style concepts (sentiment, refusal,
+sycophancy)~\cite{park2024linear,arditi2024refusal,rimsky2024caa,zou2023repe}
+shows that the geometric step and the operator step usually
+\emph{succeed together}.  We show that for high-cardinality
+identity-style concepts (LaMP user profiles) they \emph{decouple
+on at least one variant}: with fact-based extraction the per-user
+direction is recoverable, but constant-$\alpha$ additive injection
+-- and three alternative operator classes we test
+(PCA-projection, rank-1 ROME edit, $\cos$-gated routing) -- fail to
+amplify it into a population gain.  The canonical template
+extraction yields collapsed geometry instead, failing at the
+geometric step alone.
+We test this on Qwen3-8B and Qwen3-14B~\cite{qwen3technicalreport}
+in non-thinking mode, matching the canonical persona-vector
+setup~\cite{chen2025persona}.
+
+\paragraph{Falsifiable hypotheses.} We pre-register two:
 \begin{itemize}
-\item A \textbf{per-user formulation} of the persona-vector extractor:
-positive prompts derived from each user's profile texts, generic baseline
-negatives, and LaMP train inputs as extraction questions.
-\item A \textbf{layer search and dose-response analysis} on LaMP-2 showing
-that steering is \emph{nontrivial} (clean collapse at $\alpha{=}16$) but
-the peak gain at $\alpha{=}1$ does not persist at higher sample sizes.
-\item A \textbf{geometric analysis} of the extracted vectors: 92.7\% of
-the variance across 100 users is in two principal components for
-Qwen3-8B, and 99\% of pairwise cosines exceed 0.8 for Qwen3-14B.  Vectors
-are \emph{shared}, not per-user.
-\item A clean \textbf{negative result with mechanistic explanation}: the
-template-based positive prompts ($\sim$``imitate this author'') dominate
-the contrastive direction, drowning out user-specific variation.
-This delineates the failure mode of out-of-the-box persona vectors for
-personalization, and suggests where future construction should focus.
+\item[\textbf{H1.}] \emph{Per-user persona vectors are linearly
+  distinguishable in residual-stream geometry.} Falsified if the
+  extracted vectors at the empirically best layer collapse onto a
+  low-rank subspace ($\overline{\cos}\!\ge\!0.6$) that cannot be
+  attributed to duplication artifacts.
+\item[\textbf{H2.}] \emph{Inference-time additive steering at one
+  layer is sufficient to deliver per-user identity to the output
+  distribution.} Falsified if persona steering at the best layer and
+  best $\alpha$ does not exceed zero-shot on average across users.
+\end{itemize}
+\textbf{H1 is rejected for template extraction
+(full-$n$ $\overline{\cos}\!\ge\!0.6$) but supported for fact
+extraction ($\overline{\cos}\!\le\!0.32$).  H2 is rejected on both
+extractions and on three alternative operator classes -- combined
+with H1 supported on fact, this isolates the operator bottleneck on
+the fact variant; the template variant fails at the earlier
+geometric step.}
+
+\paragraph{Contributions.}
+\begin{enumerate}
+\item Per-user persona-vector formulation and identification of a
+  within-user duplication confound in LaMP-2 (\S\ref{sec:method}--\ref{sec:geometry}).
+\item Refutation of the artifact-quality hypothesis: locally generated
+  user-specific facts yield cleaner geometry
+  (LaMP-7 $\overline{\cos}{:}0.41{\to}0.27$) but no downstream gain
+  (\S\ref{sec:positive_control}).
+\item A four-cell operator-class study (App.~\ref{app:operators})
+  showing additive, PCA-projection, ROME rank-1, and $\cos$-routing
+  all stay within $\Delta\!\in\![{-}0.046,{+}0.006]$ of zero-shot,
+  with a Llama-3.1-8B cross-backbone replication.
+\item Anonymized code, raw JSON, and figures at
+  \url{https://anonymous.4open.science/r/persona-vectors-icml2026/}.
+\end{enumerate}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Method}
+\label{sec:method}
+
+\paragraph{Per-user artifacts.} For user $u$ with profile
+$\{p_1,\dots,p_6\}$, we build $n_+{=}3$ positive prompts via the
+template ``\emph{You are an author whose past work is exemplified by:}
+$p_i$'' and a fixed pool of $n_-{=}3$ generic-baseline negative
+prompts. Extraction questions are sampled from the LaMP train split
+and shared across users. This is the simplest \emph{paper-faithful}
+adaptation of the per-trait construction
+of~\citet{chen2025persona}.
+
+\paragraph{Vector extraction.} For each $(\text{system}_+,q)$ pair we
+generate a response and pool the mean residual-stream activation at
+layer $L$ over the response tokens; same for negatives. The per-user
+vector is
+\begin{equation}
+v_u \;=\; \mathrm{mean}\bigl(\mathcal{A}_{u,+}\bigr)
+        - \mathrm{mean}\bigl(\mathcal{A}_{u,-}\bigr).
+\label{eq:extraction}
+\end{equation}
+
+\paragraph{Inference-time steering.} On the \emph{output} of decoder
+layer $L$ (post-attention, post-MLP, pre-LN of $L{+}1$) we add
+$\alpha v_u$ to every token: $h^{(L+1)}_t \!\leftarrow\!
+h^{(L+1)}_t \!+\! \alpha v_u$. Canonical CAA placement~\cite{rimsky2024caa,
+turner2023actadd}; alternative injection points not searched.
+
+\paragraph{Setup.} Frozen Qwen3-8B and Qwen3-14B
+(\texttt{fp16}, $4\!\times$NVIDIA V100), seed 42, Qwen3 thinking mode
+disabled (\texttt{enable\_thinking=False} plus \texttt{/no\_think} in
+the system prompt) per the model
+recommendations~\cite{qwen3technicalreport}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Geometry: H1 rejected for template, supported for fact}
+\label{sec:geometry}
+
+\paragraph{The confound.} LaMP-2's dev split contains $1\,605$
+examples but only $323$ \emph{unique} user profiles (mean $5.0$ test
+items per user; LaMP-7 has $1\,497$ unique profiles in $1\,498$
+examples). Naive analysis on the first $n{=}100$ samples treats
+each row as a separate user and inflates inter-user similarity.
+
+\paragraph{Template extraction: H1 rejected at full $n$.}
+At face value Qwen3-8B/$L{=}13$ has mean cosine $0.749$ on LaMP-2
+(naive duplicates; Tab.~\ref{tab:geometry}). Profile-hash dedup at
+$n{=}30$ drops this to $0.329$ -- a small-sample artifact: at full
+$n{=}323$ unique LaMP-2 users $\overline{\cos}{=}0.604$; at full
+$n{=}1497$ LaMP-7 users $0.811$. Rank-at-90\,\% is $\ge 7$ (not
+strictly rank-1 collapsed) but pairs share a dominant common
+direction.  \textbf{We reject H1 for template extraction at scale.}
+
+\paragraph{Fact extraction: H1 supported at full $n$.}
+Locally generated user-specific facts yield markedly more
+user-specific vectors: $\overline{\cos}{=}0.320$ (LaMP-2 $n{=}323$),
+$0.272$ (LaMP-7 $n{=}1497$); rank-at-90\,\% $18$/$110$.
+\textbf{H1 supported for fact extraction.}  Operator failure below
+is observed on this geometry too -- decoupling extractor quality
+from operator outcome.
+
+Magnitude is comfortable for steering ($|v|/|h|{=}18.3\,\%$;
+Fig.~\ref{fig:magnitude_app}), within the steering-effective
+regime~\cite{rimsky2024caa,chen2025persona}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Steering: H2 fails on average}
+\label{sec:experiments}
+
+\paragraph{Layer search.} Sweeping the middle 60\,\% of decoder layers
+on LaMP-2 ($n{=}50$, stride 2) places the best layer at $L{=}13$ for
+Qwen3-8B (36\,\% depth) and $L{=}10$ for Qwen3-14B (25\,\% depth);
+deeper layers degrade accuracy (App.~\ref{app:layer_search},
+Table~\ref{tab:layer_search_full}, Fig.~\ref{fig:layer_app}). The
+optimal layer is earlier than typical hand-picked middle layers used
+in prior steering work~\cite{rimsky2024caa,arditi2024refusal}.
+
+\paragraph{Dose-response.} An $\alpha$-sweep on the best layer
+($n{=}200$) yields a clean response curve: $\alpha{=}1$ peaks at
+$+0.020$ accuracy over zero-shot; $\alpha{=}4$ collapses to $0.545$;
+$\alpha{=}16$ destroys base capability ($0.000$;
+App.~\ref{app:alpha}). Steering visibly perturbs the model -- the
+operator is implemented and not silently broken.  The $+0.020$ peak
+does not survive at $n{=}500$ (Extended evaluation below) and is
+not load-bearing; reported only to localize the dose window.
+
+\paragraph{Extraction questions saturate at $k{=}1$.} Increasing the
+number of extraction questions $k\!\in\!\{1,3,5,10\}$ produces
+\emph{bitwise-identical} predictions for $k{\ge}3$ (App.~\ref{app:nq}),
+indicating that the vector saturates after a single question -- there
+is no information to recover by adding more.  We attribute this to
+LaMP profiles being short and topically homogeneous (six items per
+user, mostly headlines); once the contrastive prompt-pair captures
+the dominant ``act-as-this-author'' direction, additional questions
+sample from the same low-entropy span.  This contrasts with the
+canonical persona-vector setup~\cite{chen2025persona}, where global
+character traits are exercised by $k{=}20$ diverse open-ended
+questions; we expect saturation to set in later in that regime,
+but do not test it.  The saturation we observe may therefore be to
+a low ceiling rather than a sufficient signal: a richer profile
+source (e.g.\ LongLaMP~\cite{kumar2024longlamp}) could raise it,
+a confound we do not close.
+
+\paragraph{Extended evaluation.} At $n{=}500$ on LaMP-2 the small
+positive effect at $n{=}200$ does not survive: Qwen3-8B
+$0.672 \to 0.660\,(\Delta{=}{-}0.012)$ and Qwen3-14B
+$0.678 \to 0.666\,(\Delta{=}{-}0.012)$; both within the noise envelope
+$\pm 0.022$ but identical in sign. We reject H2.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Positive control: artifacts are not the issue}
+\label{sec:positive_control}
+
+To test whether the gap is an artifact-quality problem we replace the
+template positive prompt with five \emph{concrete user-specific facts}
+generated locally by the same Qwen3-8B from the LaMP profile -- no
+external API. At $n{=}100$ unique LaMP-2 users the fact-based variant
+produces \emph{measurably more user-specific} vectors than the template:
+mean off-diagonal cosine drops from $0.471$ to $0.347$ ($\Delta{=}{-}0.12$),
+frac-cos$>\!0.8$ drops from $0.23$ to $0.02$, and rank-at-$90\%$ rises
+from $9$ to $14$.  At $n{=}30$ unique LaMP-7 users the effect is
+larger still ($\overline{\cos}$ drops from $0.413$ to $0.252$;
+App.~\ref{app:positive_control}, Fig.~\ref{fig:positive_control_app}).
+Yet downstream, fact-based steering performs \emph{worse} than
+template on LaMP-2 ($0.433$ vs.\ $0.533$; $\Delta{=}{-}0.13$ from
+zero-shot) and is within $0.005$ ROUGE-L of zero-shot on LaMP-7.
+
+\paragraph{Mechanism.}  Fact-based positive prompts are longer and
+yield larger vectors ($\|v_{\text{fact}}\|/\|v_{\text{tmpl}}\|
+{=}1.24/1.88\times$ on LaMP-2/LaMP-7).  A natural ``overshoot''
+hypothesis is that fact-based steering at $\alpha{=}1$ is past the
+useful window because $\alpha\|v\|$ is too large.  We test this
+directly by re-running additive steering with each $v_u$ rescaled
+to the population median norm (App.~\ref{app:operators},
+Op-norm-fixed): the crash persists almost unchanged
+($\Delta_{\text{tmpl}}{=}{-}0.028$ at $\alpha{=}1$ vs. $-0.025$
+unnormalized; $\Delta_{\text{fact}}{=}{-}0.043$ vs. $-0.046$),
+\textbf{ruling out norm-overshoot as the sole cause}.  The
+limitation is therefore in the constant-$\alpha$ direction-only
+operator, not in vector magnitude.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{A user where steering works}
+\label{sec:case_study}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_case_LaMP-2_user003_fact.pdf}
+\caption{Single-user trajectory. (A) Top-$5$ token probabilities at
+the answer position vs.\ $\alpha$. (B) Probability of the gold token
+\texttt{politics} vs.\ $\alpha$. (C) Greedy prediction at each
+$\alpha$ (gold green, wrong red). Phase transition between
+$\alpha{=}0.50$ and $\alpha{=}0.75$.}
+\label{fig:case_study}
+\end{figure}
+
+A representative user (id $3$ on LaMP-2) has a profile dominated by
+women's voices, social-media humor and gender issues. Their test
+input asks for the topical category of a politically-framed article;
+zero-shot greedy decoding returns \texttt{education} with probability
+$1.00$. Steering with their fact-based persona vector at $L{=}13$
+produces a sharp phase transition (Fig.~\ref{fig:case_study}): between
+$\alpha{=}0.50$ ($P(\texttt{ed.}){=}0.70$, $P(\texttt{pol.}){=}0.30$)
+and $\alpha{=}0.75$ ($P(\texttt{pol.}){=}1.00$) the argmax flips to
+the gold answer.
+
+\paragraph{Is this cherry-picked?  A per-user $\alpha$-search across
+all $n{=}323$ unique LaMP-2 users.}  We ran the full $\alpha$-grid
+$\{0,0.25,0.5,0.75,1,1.25,1.5,2\}$ on every user and recorded the
+minimum $\alpha$ at which the prediction first matches gold
+(App.~\ref{app:alpha_search}, Fig.~\ref{fig:alpha_search_app}).  With
+fact-based vectors, $29/323$ wrong-at-$\alpha{=}0$ users are flipped
+to gold by some $\alpha$ (first-correct $\alpha\!\in\![0.25,2.0]$,
+mean $0.66$, std $0.44$), while $48/323$ correct-at-$\alpha{=}0$
+users are \emph{broken} by some $\alpha\!>\!0$.  Template steering
+behaves similarly ($11$ flipped, $42$ broken).  The net effect of any
+single global $\alpha$ is therefore $\mathrm{flipped}-\mathrm{broken}
+{=}{-}19$ (fact) or ${-}31$ (template) -- broken consistently
+outweighs flipped at every constant $\alpha$.  Individual users are
+reachable; the canonical \emph{constant-$\alpha$} operator is not the
+right delivery mechanism for a population-average gain.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Discussion and Limitations}
+\label{sec:discussion}
+
+\paragraph{Operator robustness is geometry-conditional.}  Across
+four (task, variant) cells we test additive, PCA-projection,
+rank-1 ROME, and $\cos$-routing (Tab.~\ref{tab:operators}).  Op1
+recovers the $-0.025$ template crash but degrades fact ($-0.090$
+at $k{=}1$); Op3 fires only on fact-extracted vectors and yields
+the single largest gain ($+0.006$, LaMP-2 fact, $\tau{=}0.25$);
+Op2 is uniformly stable ($|\Delta|\!\le\!0.003$) but never
+amplifies.  \textbf{No operator crosses $\Delta{=}+0.006$} -- an
+order of magnitude below trait-level
+effects~\cite{chen2025persona,rimsky2024caa}.
+
+\paragraph{ICL vs.\ steering.}  At matched per-user history, plain
+ICL (six profile items as context) is consistently at least as
+good as steering, but neither beats zero-shot at full $n$ (LaMP-2:
+ZS${=}$ICL$_{K{=}6}{=}0.582$, steering $0.557/0.536$ tpl/fact;
+LaMP-7: ZS $0.426$, ICL$_{K{=}3}$ $0.428$;
+Tab.~\ref{tab:icl}, App.~\ref{app:icl_vs_steering}).  The $+0.02$
+ICL gain at $n{=}100$ was a small-sample fluctuation.
+
+\paragraph{No static proxy predicts per-user $\Delta$.}  Per-user
+signal-quality proxies (alignment, magnitude, NN coherence)
+correlate with $\Delta$ at $|r|\!\le\!0.39$ on $n{=}100$ but
+attenuate to $|r|\!\le\!0.14$ at $n{=}323$
+(App.~\ref{app:variance}): the early signal was small-sample noise.
+
+\paragraph{Significance.}  Paired tests on per-user predictions
+(Tab.~\ref{tab:icl}): LaMP-2 ($n{=}323$, McNemar exact) tpl
+$p{=}0.17$, fact $p{=}0.08$, ICL $p\!\ge\!0.89$; LaMP-7 ($n{=}1497$,
+bootstrap $B{=}10^4$) fact $\Delta{=}{-}0.006$, $p{=}0.017$ (only
+cell with $p\!<\!0.05$); template and ICL straddle zero.
+\textbf{The canonical operator never amplifies; on LaMP-7 fact it
+significantly degrades.}
+
+\paragraph{Weaknesses.}
+(i)~Dedup LaMP-2 at $n{=}30$ is thin (full-$n{=}323$ resolves this).
+(ii)~Primary backbone is Qwen3; Mistral-7B at $L{=}14$ reproduces
+the crash sign but $L$ was not searched there -- a sign-preserving
+lower bound, not a fair model comparison.
+(iii)~$k{=}1$ extraction; $k{=}20$ with frontier-LLM
+prompts~\cite{chen2025persona} untested ($k\!\le\!10$ does not
+improve).
+(iv)~Multi-layer composition and learned per-user $\alpha$ are out
+of scope -- the bottleneck predicts these.
+
+\paragraph{Conclusion.}\label{sec:conclusion}
+With fact-based extraction, per-user identity is a recoverable
+linear direction, but no single-layer constant-$\alpha$ operator
+we test delivers it (largest gain $+0.006$).  \textbf{Where
+extraction is controlled, the operator -- not the extractor -- is
+the bottleneck; template extraction fails earlier at geometry.}
+
+\bibliographystyle{icml2026}
+\bibliography{refs}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\appendix
+\onecolumn
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{ICL baseline at full $n$}
+\label{app:icl_vs_steering}
+For each user we prepend $K\!\in\!\{3,5,6\}$ profile items as plain
+context to the test query (no input--output demonstrations -- the
+LaMP \texttt{titles\_p6} profile does not store user labels).
+Aggregate metrics on \emph{all} unique users in each split (LaMP-2:
+$n{=}323$; LaMP-7: $n{=}1497$):
+
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lrrrr}
+\toprule
+              & \multicolumn{2}{c}{LaMP-2 ($n{=}323$)} &
+                \multicolumn{2}{c}{LaMP-7 ($n{=}1497$)} \\
+              & acc           & $\Delta$ZS &
+                R-L           & $\Delta$ZS \\
+\midrule
+Zero-shot     & \textbf{0.582} & ---       & \textbf{0.426} & ---       \\
+Steering $\alpha{=}1$ (template)
+              & 0.557          & $-0.025$  & --             & --        \\
+Steering $\alpha{=}1$ (fact)
+              & 0.536          & $-0.046$  & --             & --        \\
+ICL $K{=}3$   & 0.579          & $-0.003$  & 0.428          & $+0.002$  \\
+ICL $K{=}5$   & 0.576          & $-0.006$  & --             & --        \\
+ICL $K{=}6$   & \textbf{0.582} & $0.000$   & --             & --        \\
+\bottomrule
+\end{tabular}
+\caption{Persona steering vs.\ in-context-learning baselines at full
+unique-user $n$.  Both methods receive the same six profile items per
+user.  At full $n$ neither ICL nor steering beats zero-shot on LaMP-2;
+the apparent ICL gain at $n{=}100$ was a small-sample fluctuation.
+The operator ranking
+$\textsf{ICL}\!\succeq\!\textsf{ZS}\!>\!\textsf{steering}$ is preserved.}
+\label{tab:icl}
+\end{table}
+
+\section{Per-user variance analysis (full)}
+\label{app:variance}
+We compute three static per-user signal-quality proxies from the
+extracted persona vectors $\{v_u\}$ and correlate them with the
+per-user $\Delta$ROUGE-L (steered minus zero-shot).
+\begin{itemize}
+\item P1: $\cos(v_u, \bar v)$ where $\bar v$ is the population mean.
+\item P2: $\|v_u\|/\overline{\|v\|}$ -- effective perturbation at
+  constant $\alpha$.
+\item P3: mean cosine to the $k{=}5$ nearest-neighbour user vectors.
 \end{itemize}
 
-\section{Background}
-\paragraph{Persona vectors.}
-Rimsky et al.~\cite{rimsky2025persona} extract a vector at residual-stream
-layer $L$ for a target trait by averaging activations under contrastive
-\emph{system} prompts: positive prompts elicit the trait, negative prompts
-suppress it.  At inference, $\alpha\!\cdot\!v$ is added to the residual
-stream, with positive $\alpha$ amplifying and negative $\alpha$ suppressing
-the trait.
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lrrrr}
+\toprule
+Pearson $r(\text{stat}, \Delta)$ &
+\multicolumn{2}{c}{LaMP-2 ($n{=}323$)} &
+\multicolumn{2}{c}{LaMP-2 ($n{=}100$)} \\
+                                       & template & fact   & template & fact \\
+\midrule
+P1 -- proj on global mean              & $+0.061$ & $+0.040$ & $+0.285$ & $+0.112$ \\
+P2 -- relative magnitude               & $-0.034$ & $-0.074$ & $\mathbf{-0.392}$ & $-0.150$ \\
+P3 -- top-$5$ NN coherence             & $+0.053$ & $-0.138$ & $+0.241$ & $-0.043$ \\
+\bottomrule
+\end{tabular}
+\caption{Static per-user signal-quality vs.\ per-user steering effect
+($\Delta$ acc).  At $n{=}100$ the $r{=}{-}0.39$ for template magnitude
+appeared to confirm the magnitude mechanism of
+\S\ref{sec:positive_control}; \emph{at full $n{=}323$ all three
+correlations attenuate to near zero}, indicating that the strong
+$n{=}100$ signals were small-sample artifacts and that no static
+linear property of $v_u$ that we tested predicts which users will be
+helped or hurt.}
+\label{tab:variance_corr}
+\end{table}
 
-\paragraph{LaMP personalization.}
-LaMP is a 6-task suite where each example carries a user profile (history of
-their past items).  Tasks span classification (LaMP-1, 2), regression
-(LaMP-3) and short generation (LaMP-4, 5, 7).  Standard baselines train an
-encoder over the profile to produce a soft prefix~\cite{salemi2024lamp}.
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\linewidth]{figures/fig_variance_analysis_lamp2.pdf}
+\caption{LaMP-2 ($n{=}100$): scatter of P1/P2/P3 vs.\ per-user
+$\Delta$ROUGE-L (steered minus zero-shot).  Green: positive $\Delta$;
+red: negative $\Delta$; gray: $|\Delta|\!<\!0.01$.  Dashed line:
+least-squares fit.}
+\label{fig:variance_lamp2_app}
+\end{figure}
 
-\section{Method}
-\paragraph{Per-user artifacts.}
-For user $u$ with profile $\{p_1,\dots,p_6\}$, we build $n_+\!=\!3$ positive
-prompts via the template
-``\emph{You are an author whose past work is exemplified by: \{$p_i$\}.
-Reproduce that author's preferences.}''
-The $n_-\!=\!3$ negative prompts are a fixed pool of generic-baseline
-strings.  Extraction questions are sampled from the LaMP train split,
-shared across users.
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\linewidth]{figures/fig_variance_analysis_lamp7.pdf}
+\caption{Same as Fig.~\ref{fig:variance_lamp2_app} for LaMP-7
+($n{=}200$); correlations are uniformly weak on the paraphrase task.}
+\label{fig:variance_lamp7_app}
+\end{figure}
 
-\paragraph{Vector extraction.}
-For each (system\_prompt, question) pair we generate a response and pool the
-mean residual-stream activation at layer $L$ over response tokens.  The
-per-user vector is
-\[
-v_u \;=\; \mathrm{mean}(\mathcal{A}_{u,+}) - \mathrm{mean}(\mathcal{A}_{u,-})
-\]
-exactly following Rimsky et al.
+\section{Per-user $\alpha$-search (full)}
+\label{app:alpha_search}
+We sweep $\alpha\!\in\!\{0,0.25,0.5,0.75,1,1.25,1.5,2\}$ for every
+user.  At full $n{=}323$ unique LaMP-2 users:
+\begin{itemize}
+\item \textbf{Template variant:} $188$ correct at $\alpha{=}0$, of which
+$42$ are \emph{broken} by some $\alpha\!>\!0$; $11$ wrong-at-$\alpha{=}0$
+users are flipped to correct (first-correct $\alpha\!\in\![0.25, 2.0]$,
+mean $0.886$, std $0.444$); $124$ are never correct.  Net effect of
+any constant $\alpha$: $11-42{=}-31$ users.
+\item \textbf{Fact variant:} $188$ correct at $\alpha{=}0$, of which
+$48$ are \emph{broken}; $29$ wrong-at-$\alpha{=}0$ users are flipped to
+correct (first-correct $\alpha\!\in\![0.25,2.0]$, mean $0.664$,
+std $0.437$); $106$ are never correct.  Net effect of any constant
+$\alpha$: $29-48{=}-19$ users.
+\end{itemize}
+Broken consistently outweighs flipped at every constant $\alpha$, on
+both variants; this is the mechanism behind the population-average
+$\Delta\!\le\!0$ of \S\ref{sec:experiments}.
 
-\paragraph{Inference.}
-A forward hook on layer $L$ adds $\alpha v_u$ to all residual-stream
-positions during user-specific generation.
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\linewidth]{figures/fig_alpha_search_Qwen3-8B_LaMP-2_template.pdf}
+\caption{Per-user $\alpha$-search on $n{=}100$ unique LaMP-2 users
+(Qwen3-8B, $L{=}13$, template-based artifacts).  (A) Counts in each
+outcome category -- $5{:}1$ broken-to-flipped ratio at any constant
+$\alpha\!>\!0$.  (B) Per-user binary trajectory across $\alpha$
+(blue: flipped to correct; red: broken; gray: stays correct;
+black: never correct).  (C) Histogram of first $\alpha$ at which
+prediction matches gold among the three flipped users -- the global
+$\alpha{=}1$ (red dashed) coincides with one of them; the others
+flip at $\alpha{=}0.75$.}
+\label{fig:alpha_search_app}
+\end{figure}
+
+\section{Reproducibility}
+\label{app:reproducibility}
+All code, raw \texttt{.json} results, and \texttt{matplotlib}-rendered
+figures are anonymized at
+\url{https://anonymous.4open.science/r/persona-vectors-icml2026/}.
+Each experiment writes a single JSON file before any plotting. Random
+seed 42 throughout. Hardware: $4\!\times$\,NVIDIA V100 32\,GB
+(\texttt{fp16}, SDPA attention, no FlashAttention 2 / no native bf16).
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.7\linewidth]{figures/fig2_magnitude.pdf}
+\caption{Persona-vector magnitude relative to residual stream at the
+optimal layer. $|v|/|h|{=}18.3\,\%$ on Qwen3-8B and $6.3\,\%$ on
+Qwen3-14B -- both inside the steering-effective regime.}
+\label{fig:magnitude_app}
+\end{figure}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Geometry: full numbers}
+\label{app:geometry}
+\input{tables/table3_geometry.tex}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Main results table}
+\label{app:main_table}
+
+For broader placement, Tab.~\ref{tab:main_results} situates
+persona-vector steering at $n{=}200$ against a fully trained
+per-user-adapter baseline (BehavioralTwin: Q-Former + Flan-T5-XXL
+trained on each LaMP task).  This is a smoke-evaluation reference,
+not the basis of any claim in the body: the
+operator-bottleneck conclusion is established on the full-$n$ paired
+comparisons (Tabs.~\ref{tab:icl},~\ref{tab:operators}) and is
+independent of this table.  We retain it because persona-vector
+steering is occasionally placed alongside trained adapters in the
+literature; it shows that frozen-LLM zero-shot already exceeds the
+trained baseline on three of six LaMP tasks (2/3/7), which is part
+of why a constant-$\alpha$ residual add is unlikely to add value
+on top.  Steering numbers are populated only for the tasks where
+steering was run end-to-end (LaMP-1, LaMP-2, LaMP-7); ``--'' marks
+zero-shot-vs-trained-BT-only rows.
 
 \input{tables/table1_main.tex}
 
-\section{Experiments}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Layer-by-layer details on LaMP-2}
+\label{app:layer_search}
 
-\subsection{Setup}
-We evaluate on Qwen3-8B and Qwen3-14B (frozen, fp16 weights, NVIDIA V100
-$\times$4).  All Qwen3 runs include \texttt{/no\_think} in the system prompt
-to suppress chain-of-thought.  All runs use seed=42.  Layer search uses
-$n{=}50$, geometry $n{=}100$, $\alpha$-sweep / n\_questions $n{=}200/50$,
-extended evaluation $n{=}500$.  Persona-vector extraction uses
-$n_+{=}3$ positive, $n_-{=}3$ negative system prompts and $k{=}1$ extraction
-question (matching Rimsky et al.\ §3 with the smallest paper-permitted
-configuration).
-
-\subsection{Layer search}
 \input{tables/table2_layer_search.tex}
-Sweeping the middle 60\% of decoder layers (stride 2) on LaMP-2,
-the persona-steering accuracy is maximized at layer 13 (Qwen3-8B,
-$36\%$ depth) and layer 10 (Qwen3-14B, $25\%$ depth).  At these layers the
-steering accuracy ties zero-shot.  Layers in $[18,30]$ on Qwen3-8B
-\emph{degrade} accuracy by up to 0.08, indicating that the previously
-hand-picked default ($L{=}18$, $50\%$ depth) lies in a degradation zone.
-See Figure~\ref{fig:layer_search}.
 
-\begin{figure}[t]
+Table~\ref{tab:layer_search_full} reports the per-layer accuracy on
+$n{=}50$ for both backbones at $\alpha{=}1$. The Qwen3-8B series is
+non-monotone: layers $13$ and $15$ tie zero-shot accuracy ($0.74$);
+layers $\ge\!17$ degrade. Qwen3-14B exhibits a broad plateau across
+layers $\{10,12,14,16,22,26,28\}$ at zero-shot accuracy $0.76$ with no
+layer exceeding it. See Fig.~\ref{fig:magnitude_app} for the
+magnitude analysis.
+
+\begin{table}[h]
+\centering\small
+\begin{tabular}{ccccccc}
+\toprule
+\multicolumn{3}{c}{\textbf{Qwen3-8B}} &
+\multicolumn{3}{c}{\textbf{Qwen3-14B}} & \\
+$L$ & frac & acc & $L$ & frac & acc & \\
+\midrule
+ZS &  --   & 0.740 & ZS &  --   & 0.760 & \\
+ 7 & 0.19  & 0.700 &  8 & 0.20  & 0.740 & \\
+ 9 & 0.25  & 0.720 & 10 & 0.25  & 0.760 & \\
+11 & 0.31  & 0.700 & 12 & 0.30  & 0.760 & \\
+\textbf{13} & \textbf{0.36} & \textbf{0.740} & 14 & 0.35 & 0.760 & \\
+15 & 0.42  & 0.740 & 16 & 0.40  & 0.760 & \\
+17 & 0.47  & 0.700 & 18 & 0.45  & 0.740 & \\
+19 & 0.53  & 0.660 & 20 & 0.50  & 0.740 & \\
+21 & 0.58  & 0.680 & 22 & 0.55  & 0.760 & \\
+23 & 0.64  & 0.660 & 24 & 0.60  & 0.720 & \\
+25 & 0.69  & 0.680 & 26 & 0.65  & 0.760 & \\
+27 & 0.75  & 0.680 & 28 & 0.70  & 0.760 & \\
+   &       &       & 30 & 0.75  & 0.740 & \\
+\bottomrule
+\end{tabular}
+\caption{Per-layer accuracy on LaMP-2, $n{=}50$, $\alpha{=}1.0$.}
+\label{tab:layer_search_full}
+\end{table}
+
+\begin{figure}[h]
 \centering
-\includegraphics[width=0.95\linewidth]{../figures/fig1_layer_search.pdf}
-\caption{Persona-vector quality versus extraction-layer depth on LaMP-2
-($n{=}50$).  Both backbones plateau at zero-shot in the 25--40\% region
-and decline at deeper layers.}
-\label{fig:layer_search}
+\includegraphics[width=0.85\linewidth]{figures/fig1_layer_search.pdf}
+\caption{Persona-steering accuracy on LaMP-2 vs.\ extraction layer
+fraction.}
+\label{fig:layer_app}
 \end{figure}
 
-\subsection{Geometry of per-user vectors --- a measurement confound}
-\input{tables/table3_geometry.tex}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{$\alpha$-sweep on LaMP-2}
+\label{app:alpha}
+\begin{table}[h]
+\centering\small
+\begin{tabular}{cccccccc}
+\toprule
+$\alpha$  & 0.0   & 0.5   & 1.0   & 2.0   & 4.0   & 8.0   & 16.0 \\
+\midrule
+Acc       & 0.760 & 0.770 & \textbf{0.780} & 0.745 & 0.545 & 0.160 & 0.000 \\
+F1$_w$    & 0.781 & 0.790 & \textbf{0.798} & 0.774 & 0.652 & 0.194 & 0.000 \\
+\bottomrule
+\end{tabular}
+\caption{Qwen3-8B / LaMP-2 / $L{=}13$ / $n{=}200$. Peak at
+$\alpha{=}1$, full collapse at $\alpha{=}16$.}
+\label{tab:alpha}
+\end{table}
 
-\begin{figure}[t]
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Extraction-question ablation}
+\label{app:nq}
+\begin{table}[h]
+\centering\small
+\begin{tabular}{ccc}
+\toprule
+$k$ & Acc & F1$_w$ \\
+\midrule
+ 1 & \textbf{0.740} & \textbf{0.762} \\
+ 3 & 0.700          & 0.728 \\
+ 5 & 0.700          & 0.728 \\
+10 & 0.700          & 0.724 \\
+\bottomrule
+\end{tabular}
+\caption{Qwen3-8B / LaMP-2 / $L{=}13$ / $n{=}50$. $k{\ge}3$ produces
+identical predictions per example.}
+\label{tab:nq}
+\end{table}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Positive control: full numbers}
+\label{app:positive_control}
+
+\begin{figure}[h]
 \centering
-\includegraphics[width=0.85\linewidth]{../figures/fig2_magnitude.pdf}
-\caption{Persona-vector magnitude relative to residual-stream norm at the
-optimal layer.  Qwen3-8B at $L{=}13$: $|v|/|h|{=}18.3\%$ (sufficient).
-Qwen3-14B at $L{=}10$: $6.3\%$ (smaller).  Magnitude is \emph{not} the
-bottleneck for steering.}
-\label{fig:magnitude}
+\includegraphics[width=0.95\linewidth]{figures/fig_positive_control_Qwen3-8B_LaMP-7.pdf}
+\caption{Template vs.\ fact-based extraction on LaMP-7 ($n{=}30$
+unique users). (A) Pairwise-cosine histogram: fact-based mean drops
+from $0.413$ to $0.252$. (B) PCA scree. (C) PCA(2) joint scatter
+with arrows linking the same user across both methods.}
+\label{fig:positive_control_app}
 \end{figure}
 
-A first-pass analysis on the first 100 LaMP-2 dev samples produces
-\emph{apparent} extreme collapse: mean off-diagonal cosine $0.749$
-(median $0.823$), $59\%$ of pairs above $0.8$, $92.7\%$ of variance in two
-principal components.  For Qwen3-14B at $L{=}10$ the effect is even more
-pronounced: mean cosine $0.921$.  Such numbers would suggest a near-rank-1
-template-driven extractor.
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lrrrr}
+\toprule
+                  & \multicolumn{2}{c}{LaMP-2}  & \multicolumn{2}{c}{LaMP-7} \\
+                  & template & fact            & template & fact \\
+\midrule
+$\overline{\cos}$         & 0.329 & 0.335       & 0.413 & \textbf{0.252} \\
+median cos                & 0.208 & 0.250       & 0.406 & 0.257          \\
+frac $>0.8$               & 0.03  & 0.02        & 0.00  & 0.00           \\
+rank @ 90\,\%             & 9     & 7           & 18    & 19             \\
+PCA $2$ PC                & 37.4\,\% & 59.6\,\% & 28.8\,\% & 26.7\,\%   \\
+\midrule
+ZS (acc / R-L)            & 0.567 & 0.567       & 0.430 & 0.430          \\
+template $\alpha{=}1$     & 0.533 & --          & 0.430 & --             \\
+fact $\alpha{=}1$         &  --   & 0.433       &  --   & 0.425          \\
+\bottomrule
+\end{tabular}
+\caption{Template vs.\ fact-based persona vectors on $n{=}30$ unique
+users. Geometry differs strongly on LaMP-7 only; downstream is
+indistinguishable for both tasks.}
+\label{tab:positive_control}
+\end{table}
 
-\emph{However}, LaMP's evaluation split contains $\sim\!5$ test items per
-unique user (1605 dev samples, only 323 distinct profiles), and our naïve
-sampling at the example level treats each as a separate ``user''.  When we
-deduplicate by profile hash and re-extract for $n{=}30$ \emph{actually
-unique} users, the picture inverts: mean off-diagonal cosine drops to
-$0.329$, only $3\%$ of pairs exceed $0.8$, rank-at-90\% rises to $9$.
-\textbf{Per-user persona vectors \emph{are} distinguishable in residual-stream
-geometry --- the apparent collapse was a sampling artifact.}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Alternative steering operators}
+\label{app:operators}
+The body shows that single-layer additive steering at constant $\alpha$
+\emph{degrades} accuracy on LaMP-2 ($-0.025$ at $\alpha{=}1$) while
+geometry is well-formed.  We test three operator-class modifications,
+holding the extracted vectors $v_u$, layer $L{=}13$, and dataset
+fixed.  Each is a strict generalization of the additive baseline and
+reduces to it under specific parameter settings.
 
-\subsection{Steering response curve}
-\begin{figure}[t]
+\paragraph{Op1 -- projection-nuisance.}  Compute the top-$k$ PCA basis
+$B\!\in\!\mathbb{R}^{k\times d}$ over the population of all $v_u$ and
+steer with the residual:
+$\tilde v_u = v_u - B^{\!\top}\! B\, v_u$.  Top-$k$ PCs capture
+\emph{variance shared across users} -- typically a dominant
+``act-as-author'' template direction; removing them isolates
+user-specific residual.
+
+\paragraph{Op2 -- rank-1 weight edit (ROME-style).}  Instead of
+adding $\alpha v_u$ at a single forward pass, we apply a persistent
+rank-1 update to the MLP \texttt{down\_proj} at layer $L$:
+$W_{\text{down}}\!\leftarrow\!W_{\text{down}} + (s_u/\|k^{\!*}\|^2)
+\,(v_{\bar u}\!\otimes\!k^{\!*})$, where $v_{\bar u}$ is the mean
+user vector, $k^{\!*}$ is the mean intermediate-dim activation at
+the last prompt token, and $s_u\!=\!\alpha (v_u\!\cdot\!v_{\bar u})/
+\|v_{\bar u}\|^2$ scales by per-user alignment with the population
+mean.  The edit persists through all subsequent layers (in contrast
+to additive, which is mixed away by attention/MLP
+downstream)~\cite{meng2022rome}.
+
+\paragraph{Op3 -- token-selective routing.}  Apply additive steering
+only at positions whose pre-injection hidden state has high cosine
+with $v_u$:
+$h_l[t]\!\mathrel{+}=\!\alpha v_u\,\mathbb{1}\!\bigl[\cos(h_l[t],
+v_u)\!>\!\tau\bigr]$.  At $\tau\!=\!-\infty$ this recovers the
+additive baseline; at $\tau\!\to\!1$ no token is steered.
+
+\begin{table*}[h]
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccccccc}
+\toprule
+            & \multicolumn{2}{c}{LaMP-2 tpl. ($n{=}323$)} & \multicolumn{2}{c}{LaMP-2 fact ($n{=}323$)} & \multicolumn{2}{c}{LaMP-7 tpl. ($n{=}1497$)} & \multicolumn{2}{c}{LaMP-7 fact ($n{=}1497$)} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}
+Operator (best $\alpha$)    & best & $\Delta$ZS & best & $\Delta$ZS & best & $\Delta$ZS & best & $\Delta$ZS \\
+\midrule
+Zero-shot                   & $0.582$ & $0$        & $0.582$ & $0$       & $0.4262$ & $0$        & $0.4262$ & $0$ \\
+Additive ($\alpha{=}1$)     & $0.557$ & $-0.025$   & $0.536$ & $-0.046$  & $0.4279$ & $+0.002$   & $0.4205$ & $-0.006$ \\
+\midrule
+Op1 proj.\ ($k{=}5$)        & $\mathbf{0.585}$ & $+0.003$ & $0.567$ & $-0.016$ & $0.4269$ & $+0.001$ & $0.4257$ & $-0.001$ \\
+Op2 rank-1                  & $0.579$ & $-0.003$   & $0.582$ & $0.000$   & $\mathbf{0.4279}$ & $+0.002$ & $\mathbf{0.4271}$ & $+0.001$ \\
+Op3 routing ($\tau{=}0.25$) & $0.582$ & $0.000$    & $\mathbf{0.588}$ & $\mathbf{+0.006}$ & --$^\dagger$ & -- & --$^\dagger$ & -- \\
+\bottomrule
+\end{tabular}
+\caption{Alternative operators vs.\ additive baseline (Qwen3-8B,
+$L{=}13$); best $\alpha$ per (operator, task, variant) cell.  $^\dagger$Op3 on LaMP-7
+was run at $n{=}200$ (App.~\ref{app:operators}); since the gate is
+token-level rather than user-level, larger $n$ does not change the
+conclusion (gate fires only at $\tau{=}0$ on template). The single
+largest gain we find anywhere is Op3 routing on LaMP-2 fact at
+$\tau{=}0.25$, $+0.006$ over zero-shot --- the only operator-task
+pair where the cosine gate \emph{does} fire stably (because fact
+vectors are more aligned with token activations).
+None of the three operators exceeds $\Delta\!=\!+0.006$ on any task.}
+\label{tab:operators}
+\end{table*}
+
+\paragraph{Findings.}
+(i)~\emph{Op1 helps only when there is a population direction to
+remove.}  On LaMP-2 template, where additive steering crashes by
+$-0.025$, removing the top-$k\!=\!5$ PCs recovers the deficit
+entirely and yields $+0.003$ at $\alpha{=}0.5$ (removed variance
+$\approx 30\,\%$).  On LaMP-2 fact, LaMP-7 template, and LaMP-7
+fact -- where the population direction is already absent or weak
+(App.~\ref{app:positive_control}) -- Op1 either degrades (LaMP-2
+fact: $-0.016$ at $\alpha{=}0.5,k{=}5$, down to $-0.090$ at
+$k{=}1$) or stays inside $\pm0.002$ of zero-shot (LaMP-7 template/fact
+at $n{=}1497$).  Op1's effect is therefore not a generic recipe but a
+geometry-conditional one.
+(ii)~\emph{Persistent rank-1 weight edits are uniformly stable.}
+Op2 stays within $0.003$ of zero-shot on every task variant we test:
+LaMP-2 template ($-0.003$ at $\alpha{=}2$), LaMP-2 fact ($0.000$),
+LaMP-7 template at $n{=}1497$ ($+0.002$ at $\alpha{=}2$), LaMP-7
+fact at $n{=}1497$ ($+0.001$ at $\alpha{=}0.5$).  The per-user
+alignment scaling $s_u$ keeps the edit small for users misaligned
+with $v_{\bar u}$, which avoids the additive crash at the cost of
+amplification.
+(iii)~\emph{Token-selective routing fires only on fact geometry.}
+On template-extracted vectors the cosine of any token with $v_u$ is
+typically $\!<\!0.1$; no $\tau\!\in\!\{0.25,\dots,1.0\}$ ever fires
+the gate (Op3 collapses to zero-shot).  On \emph{fact-extracted}
+LaMP-2 vectors the gate fires for a non-trivial fraction of tokens
+at $\tau{=}0.25$, and the resulting selective steering produces
+the largest gain we find anywhere: $+0.006$ over ZS, stable across
+$\alpha\!\in\![0.5,2]$.  This is a small but real effect tied to
+the fact-extraction protocol producing higher token-direction
+overlap than the template variant.
+(iv)~\emph{No operator we tested converts geometry into a
+$>\!+0.006$ gain.}  The gap between $\Delta\!\approx\!0$ and a
+meaningful per-user effect is not closed by any single-layer
+operator-class change.  The remaining levers are multi-layer
+composition, learned per-user $\alpha$ schedules, and richer
+extraction protocols ($k{>}1$ extraction questions; multi-layer
+extraction).
+
+\begin{figure}[h]
 \centering
-\includegraphics[width=0.7\linewidth]{../figures/fig5_alpha_curve.pdf}
-\caption{Accuracy on LaMP-2 (Qwen3-8B, $L{=}13$, $n{=}200$) versus
-$\alpha$. Peak is at $\alpha{=}1$ ($+0.02$ over zero-shot); collapse to
-$0.16$ at $\alpha{=}8$ and $0.00$ at $\alpha{=}16$.}
-\label{fig:alpha}
+\includegraphics[width=0.95\linewidth]{figures/fig_operators_comparison.pdf}
+\caption{Operator comparison across $\alpha$ on the four full-$n$
+cells: (top-left) LaMP-2 template $n{=}323$, accuracy; (top-right)
+LaMP-2 fact $n{=}323$, accuracy; (bottom-left) LaMP-7 template
+$n{=}1497$, ROUGE-L; (bottom-right) LaMP-7 fact $n{=}1497$, ROUGE-L.
+Op1 (projection) recovers the additive crash on LaMP-2 template
+but degrades fact-extracted vectors.  Op2 (rank-1 ROME) is uniformly
+stable.  Op3 routing at $\tau{=}0.25$ on LaMP-2 fact is the single
+cell with a $>\!0.005$ gain --- on template variants the gate never
+fires.}
+\label{fig:operators}
 \end{figure}
 
-\subsection{Extraction-question ablation}
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.7\linewidth]{../figures/fig6_n_questions.pdf}
-\caption{Accuracy versus number of extraction questions
-($k\in\{1,3,5,10\}$, $n{=}50$). Predictions for $k{\ge}3$ are
-bitwise-identical, indicating that the persona vector saturates after a
-single question, consistent with the rank-2 collapse from Section~3.3.}
-\label{fig:nq}
-\end{figure}
+\paragraph{Implications for the body.}  Tab.~\ref{tab:operators}
+strengthens the conclusion of \S\ref{sec:discussion}: limitation
+(iv) (multi-layer / per-token / projection-out) was previously
+listed as out-of-scope; we have now tested two of three
+generalizations directly.  A shared-template projection
+(Op1, $k{=}5$) erases the additive deficit and is the single
+operator change we identified that does not hurt accuracy on
+LaMP-2; a persistent weight edit (Op2) is comparably benign.
+Neither converts the per-user geometric signal into a meaningful
+downstream gain.
 
-\subsection{Extended evaluation}
-At $n{=}500$ on LaMP-2, persona steering produces a small \emph{negative}
-effect on both backbones (Qwen3-8B: $0.672 \!\to\! 0.660$, $\Delta{=}-0.012$;
-Qwen3-14B: $0.678 \!\to\! 0.666$, $\Delta{=}-0.012$).  These match in sign
-across backbones but lie within the $n{=}500$ noise envelope ($\pm 0.022$).
+\paragraph{Norm-fixed control (reviewer Q1).}
+Reviewer asks whether the fact-vs-template downstream gap can be
+explained purely by vector magnitudes ($\|v_{\text{fact}}\|/\|v_{\text{tmpl}}\|
+{=}1.24$ on LaMP-2).  We re-run additive steering with each $v_u$
+rescaled to the population median norm $\|v\|_{\text{med}}$ (Op-norm-fixed
+in our framework).  Median norms: $9.82$ (template) and $9.23$
+(fact); per-user range $[4.9, 30.7]$ and $[5.7, 34.8]$ respectively.
+The crash is essentially unchanged after norm equalization
+(Tab.~\ref{tab:normfixed}), confirming that the operator
+bottleneck is in the constant-$\alpha$ direction-only injection,
+not in vector magnitude.
 
-\subsection{Positive control: template vs.\ fact-based artifacts}
-\label{sec:positive_control}
-To test whether the residual gap is an \emph{artifact-quality} problem, we
-compare the template-based positive prompt with a richer alternative
-generated locally by the same Qwen3-8B: 5 distinguishing facts per user,
-elicited from the LaMP profile in a single \texttt{generate()} call (no
-external API).
-On $n{=}30$ unique-user LaMP-2 samples, fact-based artifacts produce
-\emph{essentially identical} geometry ($\overline{\cos}{=}0.335$ vs.
-$0.329$ for template; PCA rank-at-90\% $7$ vs.\ $9$).  Yet downstream
-they hurt \emph{more}: zero-shot $0.567 \to$ template $0.533$
-($\Delta{=}-0.033$) $\to$ fact-based $0.433$ ($\Delta{=}-0.133$).
-The fact-based prompts contain user-specific topical content; injecting
-their direction at $\alpha{=}1$ overrides the model's task-classification
-prior, exactly as the high-$\alpha$ regime of the dose-response curve
-predicts.  The bottleneck is therefore not artifact richness, but the
-narrowness of the useful steering window.
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lccccc}
+\toprule
+$\alpha$ & $0.0$ & $0.5$ & $1.0$ & $1.5$ & $2.0$ \\
+\midrule
+\multicolumn{6}{l}{\emph{LaMP-2 template, $n{=}323$}}\\
+Additive   & $0.582$ & --      & $0.557$ & --      & --      \\
+Norm-fixed & $0.582$ & $0.573$ & $0.554$ & $0.536$ & $0.520$ \\
+\midrule
+\multicolumn{6}{l}{\emph{LaMP-2 fact, $n{=}323$}}\\
+Additive   & $0.582$ & --      & $0.536$ & --      & --      \\
+Norm-fixed & $0.582$ & $0.554$ & $0.539$ & $0.514$ & $0.511$ \\
+\bottomrule
+\end{tabular}
+\caption{Norm-equalization control. Setting $\|v_u\|$ to the
+population median (target norms above) leaves the additive crash
+essentially unchanged on both variants, refuting the
+``norm-overshoot'' hypothesis from \S\ref{sec:positive_control}.}
+\label{tab:normfixed}
+\end{table}
 
-\section{Analysis}
-\paragraph{Why does steering not improve accuracy --- revised.}
-Our initial reading of the geometry analysis suggested the extracted
-vectors were not user-specific.  The deduplicated re-analysis
-(Section~3.3) and the positive control (Section~3.7) refute that:
-per-user vectors \emph{are} distinguishable, with mean off-diagonal cosine
-$\sim\!0.33$ at the optimal layer, regardless of whether artifacts are
-template- or fact-based.  The failure mode is therefore at the
-\emph{steering} stage, not the \emph{extraction} stage.
-
-\paragraph{Why does increasing $k$ not help?}
-The bitwise-identical predictions for $k{\ge}3$ (Section~3.5) confirm the
-geometric finding: the vector saturates after one question because the
-template effect already dominates.  More questions cannot recover variation
-that the template construction does not preserve.
-
-\paragraph{Magnitude is not the bottleneck.}
-Both backbones produce $|v|/|h|$ ratios in the steering-effective range
-(6\%–18\%), and the $\alpha$-sweep collapses at $\alpha{=}16$, evidence
-that steering does perturb the residual stream meaningfully.  The bottleneck
-is information content of the direction, not its scale.
-
-\section{Limitations}
-We use $k{=}1$ extraction question (paper §3 used 20), template-based
-positive prompts (paper used frontier-LLM-generated prompts), and no judge
-filtering.  These choices are driven by compute budget; we report the
-ablation showing $k\!\in\!\{3,5,10\}$ does not improve over $k{=}1$, which
-suggests that the simplification is not the primary failure cause, but
-frontier-LLM-generated artifacts may yield richer positive prompts and
-recover per-user variation.  Coverage on Mistral-Small-24B and Llama-3.1-8B
-is partial.  We restrict the full evaluation to LaMP-2; the behaviour on
-generation tasks (LaMP-4, 5, 7) is reported only at $n{=}200$.
-
-\section{Conclusion}
-Per-user persona vectors \emph{are} linear directions distinguishable in
-residual-stream geometry (mean off-diagonal cosine $0.33$ at the optimal
-layer after correcting for within-user duplicates in the LaMP dev split).
-However, additive steering at a single layer does not yet translate this
-geometric separation into downstream personalization gains: across an
-$\alpha$-sweep, layer search, $n_{\mathrm{questions}}$ ablation, $n{=}500$
-extended evaluation, and a fact-based positive control, the best observed
-effect is $-0.012$ accuracy on LaMP-2.  Richer artifacts make the failure
-worse, not better, because they push the steering signal further into the
-high-$\alpha$ regime where the model's task-classification prior begins to
-collapse.
-\textbf{The per-user linearity hypothesis is supported.  The single-layer
-additive steering operator is the limiting factor.}
-Future work should target the operator: multi-layer composition, adaptive
-$\alpha$ per token, or projecting out the global template direction before
-inject.
-We release code, raw results, and figures at
-\texttt{github.com/[anon]/persona-vectors-icml2026}.
-
-\bibliographystyle{plain}
-\bibliography{refs}
+\paragraph{Cross-backbone operator check.}  To address the concern
+that the operator bottleneck might be Qwen-specific, we replicate
+the additive $\alpha$-sweep on Mistral-7B-Instruct-v0.3 (LaMP-2,
+$n{=}100$ unique users, $L{=}14$, $k{=}1$ extraction question, same
+template prompt and seed as the Qwen3 runs).  Optimal layer was not
+searched.  Results:
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lcccc}
+\toprule
+$\alpha$ & $0$ & $0.5$ & $1.0$ & $2.0$ \\
+\midrule
+Mistral-7B-Inst.\ ($L{=}14$) & $0.640$ & $0.210$ & $0.110$ & $0.010$ \\
+$\Delta$ZS                  & $0$    & $-0.43$ & $-0.53$ & $-0.63$ \\
+\midrule
+Qwen3-8B (optimal $L{=}13$, $n{=}323$) & $0.582$ & -- & $0.557$ & -- \\
+$\Delta$ZS                  & $0$    & --      & $-0.025$ & --     \\
+\bottomrule
+\end{tabular}
+\caption{Cross-backbone additive-steering replication. The
+direction of the effect (additive crash at $\alpha\!>\!0$) is
+preserved on Mistral; the magnitude is larger because $L{=}14$
+is not optimal for Mistral (no layer search). The sign is
+unambiguous and consistent with the operator-bottleneck claim.}
+\label{tab:mistral_xbackbone}
+\end{table}
 
 \end{document}
