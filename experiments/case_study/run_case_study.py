@@ -34,8 +34,8 @@ sys.path.insert(0, str(ROOT))
 
 from src import (
     FactExtractor, LaMPDataset, PersonaSteering, PersonaVectors,
-    chat_kwargs_for, load_model_and_tokenizer, system_prompt_for,
-    task_info,
+    build_chat_prompt, chat_kwargs_for, load_model_and_tokenizer,
+    system_prompt_for,
 )
 
 
@@ -72,19 +72,6 @@ def first_token_topk(
         pred = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
     return topk, pred
-
-
-def build_chat_prompt(tokenizer, user_input: str, system_prompt: str | None,
-                      chat_kwargs: dict) -> str:
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": user_input})
-    if tokenizer.chat_template:
-        return tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True, **chat_kwargs,
-        )
-    return user_input
 
 
 def main():

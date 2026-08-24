@@ -51,7 +51,6 @@ from src import (
 
 def per_user_static_stats(vectors: np.ndarray, k: int = 5) -> dict[str, np.ndarray]:
     """Compute P1, P2, P3 from the user-vector matrix only (no inference)."""
-    n = len(vectors)
     norms = np.linalg.norm(vectors, axis=1)
     u = vectors / np.maximum(norms[:, None], 1e-8)
 
@@ -153,7 +152,7 @@ def main():
                           data_dir=str(ROOT / "data"), unique_users=True)
     samples = list(dataset)
     if len(samples) != len(vectors):
-        raise ValueError(f"sample/vector count mismatch")
+        raise ValueError("sample/vector count mismatch")
 
     info = task_info(args.task)
     chat_kwargs = chat_kwargs_for(args.model)

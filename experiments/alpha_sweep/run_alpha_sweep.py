@@ -24,18 +24,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src import (
-    LaMPDataset, PersonaVectors, compute_metric, load_model_and_tokenizer,
+    LaMPDataset, PersonaVectors, best_layer, compute_metric, load_model_and_tokenizer,
     persona_steered_generate, chat_kwargs_for, system_prompt_for, task_info,
 )
-
-
-def load_optimal_layer(model_name, task, results_dir, fallback=16):
-    short = model_name.split("/")[-1]
-    p = results_dir / "layer_search" / f"layer_search_{short}_{task}.json"
-    if p.exists():
-        with open(p) as f:
-            return int(json.load(f)["best_layer"]["layer_idx"])
-    return fallback
 
 
 @torch.no_grad()
@@ -63,7 +54,7 @@ def main():
     system_prompt = system_prompt_for(args.model)
 
     layer_idx = args.layer_idx if args.layer_idx is not None else \
-        load_optimal_layer(args.model, args.task, ROOT / "results")
+        best_layer(args.model, args.task, fallback=16)
 
     print(f"=== α-sweep: {args.model} / {args.task} / layer {layer_idx} ===")
     model, tokenizer = load_model_and_tokenizer(args.model)

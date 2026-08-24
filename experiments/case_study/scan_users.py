@@ -18,7 +18,6 @@ import os
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,7 +25,8 @@ sys.path.insert(0, str(ROOT))
 
 from src import (
     FactExtractor, LaMPDataset, PersonaSteering, PersonaVectors,
-    chat_kwargs_for, load_model_and_tokenizer, system_prompt_for,
+    build_chat_prompt, chat_kwargs_for, load_model_and_tokenizer,
+    system_prompt_for,
 )
 
 
@@ -75,7 +75,7 @@ def main():
         if cache_path.exists():
             with open(cache_path) as f:
                 cache = json.load(f)
-            fact_extractor = FactExtractor(model, tokenizer, args.task)
+            extractor = FactExtractor(model, tokenizer, args.task)
         else:
             print(f"WARNING: {cache_path} missing — falling back to template variant")
             args.variant = "template"
@@ -92,9 +92,7 @@ def main():
         if args.variant == "fact":
             user_id = str(s.get("id") or i)
             if user_id not in cache:
-                facts = FactExtractor(model, tokenizer, args.task).extract_facts(
-                    s["behavior_profile_text"])
-                cache[user_id] = facts
+                cache[user_id] = extractor.extract_facts(s["behavior_profile_text"])
             facts = cache[user_id]
             positive = [facts["positive_prompt"]]
             negative = [facts["negative_prompt"]]
@@ -102,14 +100,8 @@ def main():
             positive = s["positive_system_prompts"]
             negative = s["negative_system_prompts"]
 
-        # Build chat prompt
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": s["input_text"]})
-        prompt = tokenizer.apply_chat_template(messages, tokenize=False,
-                                               add_generation_prompt=True,
-                                               **chat_kwargs)
+        prompt = build_chat_prompt(tokenizer, s["input_text"], system_prompt,
+                                   chat_kwargs)
 
         # Extract vector
         try:

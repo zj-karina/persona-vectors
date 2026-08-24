@@ -32,7 +32,7 @@ sys.path.insert(0, str(ROOT))
 from src import (
     LaMPDataset, PersonaVectors, compute_metric, load_model_and_tokenizer,
     persona_steered_generate, chat_kwargs_for, system_prompt_for, task_info,
-    get_decoder_layers,
+    get_decoder_layers, higher_is_better, primary_value,
 )
 
 
@@ -118,7 +118,7 @@ def run_layer_search(
     metric = info["metric"]
 
     # Zero-shot baseline (control) — no steering, single forward.
-    print(f"\n--- Zero-shot baseline ---")
+    print("\n--- Zero-shot baseline ---")
     preds_zs, refs_zs = [], []
     t0 = time.time()
     for i, s in enumerate(dataset):
@@ -157,16 +157,8 @@ def run_layer_search(
         print(f"  layer {layer_idx}: {m}")
 
     # Pick best by primary metric (accuracy maxed; mae minimized; rouge maxed).
-    def primary(v):
-        if metric == "accuracy":
-            return v["value"]["accuracy"]
-        if metric == "regression":
-            return -v["value"]["mae"]
-        if metric == "rouge":
-            return v["value"]["ROUGE-L"]
-        return 0.0
-
-    best = max(results, key=primary)
+    sign = 1 if higher_is_better(metric) else -1
+    best = max(results, key=lambda v: sign * primary_value(metric, v["value"]))
     print(f"\n=== Best layer: {best['layer_idx']} ({best['layer_fraction']:.1%}) ===")
     print(f"    metric: {best['value']}")
 

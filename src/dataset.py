@@ -11,9 +11,11 @@ extraction and inference need.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import random
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterator
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +92,7 @@ class LaMPDataset:
         info = task_info(task)
         self.task = task
         self.split = split
+        self.data_dir = Path(data_dir)
         self.metric = info["metric"]
         self.max_new_tokens = info["max_new_tokens"]
         self.n_positive = n_positive
@@ -97,7 +100,7 @@ class LaMPDataset:
         self.excerpt_chars = excerpt_chars
 
         fname = "train_titles_p6.json" if split == "train" else "dev_titles_p6.json"
-        path = Path(data_dir) / info["folder"] / fname
+        path = self.data_dir / info["folder"] / fname
         if not path.exists():
             raise FileNotFoundError(path)
         with open(path, "r") as f:
@@ -105,10 +108,9 @@ class LaMPDataset:
         if unique_users:
             seen: set[str] = set()
             uniq: list[dict] = []
-            import hashlib as _h
             for s in data:
-                key = _h.md5(json.dumps(s.get("behavior_profile_text", []),
-                                       sort_keys=True).encode()).hexdigest()
+                key = hashlib.md5(json.dumps(s.get("behavior_profile_text", []),
+                                             sort_keys=True).encode()).hexdigest()
                 if key in seen:
                     continue
                 seen.add(key)
@@ -156,12 +158,11 @@ class LaMPDataset:
         questions. Independent of self.split.
         """
         info = task_info(self.task)
-        path = Path("data") / info["folder"] / "train_titles_p6.json"
+        path = self.data_dir / info["folder"] / "train_titles_p6.json"
         if not path.exists():
             return []
         with open(path) as f:
             tr = json.load(f)
-        import random
         rng = random.Random(seed)
         if k >= len(tr):
             return [d["input_text"] for d in tr]

@@ -40,7 +40,6 @@ def main():
     n = len(rows)
 
     # Categorise users
-    zs_correct = sum(r["zs_correct"] for r in rows)
     flipped = sum(r["flip"] for r in rows)
     broken = sum(1 for r in rows if r["zs_correct"]
                  and not all(p["match"] for p in r["per_alpha"]))
@@ -71,8 +70,7 @@ def main():
     axes[0].grid(axis="y", alpha=0.25)
 
     # Panel B — per-user trajectory
-    cmap = plt.get_cmap("tab20")
-    for i, r in enumerate(rows):
+    for r in rows:
         ys = [int(p["match"]) for p in r["per_alpha"]]
         col = "lightgray" if r["zs_correct"] and all(ys) else \
               "steelblue" if r["flip"] else \

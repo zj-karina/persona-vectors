@@ -30,9 +30,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src import (
-    LaMPDataset, PersonaVectors, compute_metric, load_model_and_tokenizer,
+    LaMPDataset, PersonaVectors, best_layer, compute_metric, load_model_and_tokenizer,
     persona_steered_generate, chat_kwargs_for, system_prompt_for, task_info,
-    get_decoder_layers,
 )
 
 
@@ -42,17 +41,6 @@ DEFAULT_LAYERS = {
     "Mistral-Small-24B-Instruct-2501": 22,
     "Llama-3.1-8B-Instruct": 16,
 }
-
-
-def load_optimal_layer(model_name: str, task: str,
-                       results_dir: Path) -> int | None:
-    short = model_name.split("/")[-1]
-    p = results_dir / "layer_search" / f"layer_search_{short}_{task}.json"
-    if not p.exists():
-        return None
-    with open(p) as f:
-        d = json.load(f)
-    return int(d["best_layer"]["layer_idx"])
 
 
 def default_layer(model_name: str) -> int:
@@ -131,7 +119,7 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--output_dir", default="results/full_run")
     ap.add_argument("--skip_default_layer", action="store_true",
-                    help="Skip the default-layer comparison run (saves ~33% time).")
+                    help="Skip the default-layer comparison run (saves ~33%% time).")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -140,7 +128,7 @@ def main():
     info = task_info(args.task)
     metric = info["metric"]
 
-    optimal = load_optimal_layer(args.model, args.task, ROOT / "results")
+    optimal = best_layer(args.model, args.task)
     default = default_layer(args.model)
     chosen_layer = optimal if optimal is not None else default
     print(f"=== Full run: {args.model} on {args.task}, n={args.n_samples}, α={args.alpha} ===")

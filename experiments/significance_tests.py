@@ -52,11 +52,9 @@ def lamp2_paired(zs_path: Path, method_path: Path, label: str) -> dict:
     n = len(refs)
     cz = [int(p == r) for p, r in zip(z["preds"], refs)]
     cm = [int(p == r) for p, r in zip(m["preds"], refs)]
-    # 2x2 contingency
-    a = sum(1 for x, y in zip(cz, cm) if x == 1 and y == 1)
+    # discordant cells of the 2x2 contingency table
     bb = sum(1 for x, y in zip(cz, cm) if x == 1 and y == 0)
     c = sum(1 for x, y in zip(cz, cm) if x == 0 and y == 1)
-    d = sum(1 for x, y in zip(cz, cm) if x == 0 and y == 0)
     p = mcnemar_exact(bb, c)
     return {
         "label": label,

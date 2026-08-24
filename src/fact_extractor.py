@@ -171,7 +171,7 @@ class FactExtractor:
 
         # The prompt ends with "1.", so prepend that to capture the first fact.
         if not text.startswith("1."):
-            text = "1. " + text.lstrip("1.").lstrip()
+            text = "1. " + text
 
         positive_prompt = (
             "You are assisting a specific user. Here are concrete facts about "

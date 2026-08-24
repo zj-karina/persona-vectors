@@ -43,11 +43,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src import (
-    LaMPDataset, chat_kwargs_for, compute_metric,
-    load_model_and_tokenizer, persona_steered_generate, system_prompt_for,
-    task_info,
+    LaMPDataset, build_chat_prompt, chat_kwargs_for, compute_metric,
+    load_model_and_tokenizer, system_prompt_for, task_info,
 )
-from src.persona_vectors import _layer_hidden, _replace_layer_hidden, get_decoder_layers
+from src.persona_vectors import get_decoder_layers
 
 
 # ---------------------------------------------------------------------------
@@ -79,25 +78,15 @@ def compute_k_star(model, tokenizer, samples, *, layer_idx: int,
 
     captured: list[torch.Tensor] = []
 
-    def hook(module, inputs, output):
+    def capture(module, inputs):
         # `inputs[0]` is the intermediate-dim tensor; shape [B, T, D_ff]
         captured.append(inputs[0][:, -1, :].detach().float().cpu())
 
-    handle = target.register_forward_pre_hook(
-        lambda m, inp: captured.append(inp[0][:, -1, :].detach().float().cpu()),
-        with_kwargs=False,
-    )
+    handle = target.register_forward_pre_hook(capture)
     try:
         for i, s in enumerate(samples[:max_users]):
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": s["input_text"]})
-            if tokenizer.chat_template:
-                prompt = tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True, **chat_kwargs)
-            else:
-                prompt = s["input_text"]
+            prompt = build_chat_prompt(tokenizer, s["input_text"], system_prompt,
+                                       chat_kwargs)
             enc = tokenizer(prompt, return_tensors="pt", truncation=True,
                             max_length=1024).to(next(model.parameters()).device)
             model(**enc, use_cache=False)
@@ -155,15 +144,7 @@ def eval_alpha_rank1(
         s_u = float(np.dot(v, v_mean) / max(v_mean_norm_sq, 1e-8))
         scale = alpha * s_u
 
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": s["input_text"]})
-        if tokenizer.chat_template:
-            prompt = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True, **chat_kwargs)
-        else:
-            prompt = s["input_text"]
+        prompt = build_chat_prompt(tokenizer, s["input_text"], system_prompt, chat_kwargs)
         enc = tokenizer(prompt, return_tensors="pt", truncation=True,
                         max_length=1024).to(next(model.parameters()).device)
 

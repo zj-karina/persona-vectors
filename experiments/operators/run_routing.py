@@ -37,9 +37,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src import (
-    LaMPDataset, chat_kwargs_for, compute_metric,
-    load_model_and_tokenizer, persona_steered_generate, system_prompt_for,
-    task_info,
+    LaMPDataset, build_chat_prompt, chat_kwargs_for, compute_metric,
+    load_model_and_tokenizer, system_prompt_for, task_info,
 )
 from src.persona_vectors import (
     _layer_hidden, _replace_layer_hidden, get_decoder_layers,
@@ -113,16 +112,7 @@ def eval_pair(
         else:
             ctx = routing.hook(torch.from_numpy(v), alpha=alpha, tau=tau)
 
-        # Build prompt and generate
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": s["input_text"]})
-        if tokenizer.chat_template:
-            prompt = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True, **chat_kwargs)
-        else:
-            prompt = s["input_text"]
+        prompt = build_chat_prompt(tokenizer, s["input_text"], system_prompt, chat_kwargs)
         enc = tokenizer(prompt, return_tensors="pt", truncation=True,
                         max_length=1024).to(next(model.parameters()).device)
 

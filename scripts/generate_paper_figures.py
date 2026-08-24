@@ -18,7 +18,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import matplotlib
@@ -51,18 +50,9 @@ def short(model_name: str) -> str:
     return model_name.split("/")[-1].replace("-Instruct-2501", "")
 
 
-def primary_value(metric: str, value: dict) -> float:
-    if metric == "accuracy":
-        return value["accuracy"]
-    if metric == "regression":
-        return value["mae"]
-    if metric == "rouge":
-        return value["ROUGE-L"]
-    return float("nan")
-
-
-def primary_label(metric: str) -> str:
-    return {"accuracy": "Accuracy", "regression": "MAE", "rouge": "ROUGE-L"}[metric]
+import sys
+sys.path.insert(0, str(ROOT))
+from src import primary_label, primary_value  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +252,6 @@ def plot_n_questions():
 def make_table_main():
     """Build LaTeX table from results/main_table + results/full_run."""
     smoke_files = list((RESULTS / "main_table").glob("*.json"))
-    full_files = list((RESULTS / "full_run").glob("*.json"))
 
     # smoke rows
     smoke: dict[tuple[str, str], dict] = {}
@@ -272,17 +261,6 @@ def make_table_main():
             continue
         smoke.setdefault((short(d["llm"]), d["task"]), {})[d.get("experiment", "?")] = d
 
-    rows = (
-        ("Trained baselines (Flan-T5-XXL frozen, Q-Former trained)", [
-            ("BehavioralTwin", {
-                "LaMP-1": ("0.567", False), "LaMP-2": ("0.703", False),
-                "LaMP-3": ("0.251", False), "LaMP-4": ("0.179", False),
-                "LaMP-5": ("0.437", False), "LaMP-7": ("0.403", False),
-            }),
-        ]),
-    )
-
-    # Stub LaTeX — replaced lazily based on available data.
     body_lines: list[str] = []
 
     def fmt_val(metric, val):
@@ -292,10 +270,6 @@ def make_table_main():
 
     backbones = ["Qwen3-8B", "Qwen3-14B", "Mistral-Small-24B"]
     tasks = ["LaMP-1", "LaMP-2", "LaMP-3", "LaMP-4", "LaMP-5", "LaMP-7"]
-    metric_per_task = {
-        "LaMP-1": "accuracy", "LaMP-2": "accuracy", "LaMP-3": "regression",
-        "LaMP-4": "rouge", "LaMP-5": "rouge", "LaMP-7": "rouge",
-    }
 
     body_lines.append(r"\multicolumn{7}{l}{\textit{Trained baseline (Flan-T5-XXL, Q-Former)}} \\")
     body_lines.append(r"BehavioralTwin & 0.567 & 0.703 & 0.251 & 0.179 & 0.437 & 0.403 \\")

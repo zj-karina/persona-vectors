@@ -65,3 +65,20 @@ def compute_metric(metric: str, preds, labels) -> dict:
     if metric == "rouge":
         return compute_rouge(preds, labels)
     raise ValueError(f"Unknown metric: {metric}")
+
+
+_PRIMARY_KEY = {"accuracy": "accuracy", "regression": "mae", "rouge": "ROUGE-L"}
+_PRIMARY_LABEL = {"accuracy": "Accuracy", "regression": "MAE", "rouge": "ROUGE-L"}
+
+
+def primary_value(metric: str, value: dict) -> float:
+    """Headline number of a metric dict — what the tables and plots report."""
+    return float(value[_PRIMARY_KEY[metric]])
+
+
+def primary_label(metric: str) -> str:
+    return _PRIMARY_LABEL[metric]
+
+
+def higher_is_better(metric: str) -> bool:
+    return metric != "regression"   # LaMP-3 is scored by MAE

@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src import (
-    LaMPDataset, PersonaSteering,
+    LaMPDataset,
     chat_kwargs_for, load_model_and_tokenizer, persona_steered_generate,
     system_prompt_for, task_info,
 )
@@ -138,7 +138,6 @@ def main():
     n = len(rows)
     n_zs_correct = sum(r["zs_correct"] for r in rows)
     n_flips = sum(r["flip"] for r in rows)
-    n_only_alpha_correct = sum(1 for r in rows if r["any_correct"] and not r["zs_correct"])
     n_unsteerable = sum(1 for r in rows if not r["any_correct"])
     flip_alphas = [r["first_correct_alpha"] for r in rows if r["flip"]]
 

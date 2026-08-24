@@ -14,7 +14,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-REPO_NAME="${REPO_NAME:-persona-vectors-icml2026}"
+REPO_NAME="${REPO_NAME:-$(basename "$(pwd)")}"
 VISIBILITY="${VISIBILITY:-public}"
 
 echo "=== Init git repo ==="

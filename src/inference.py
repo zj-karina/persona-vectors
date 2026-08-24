@@ -3,21 +3,20 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from typing import Sequence
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from .persona_vectors import PersonaSteering, PersonaVectors
+from .persona_vectors import PersonaSteering
 
 
 def is_qwen3(model_name: str) -> bool:
-    return "qwen3" in model_name.lower() or "qwen3.5" in model_name.lower()
+    return "qwen3" in model_name.lower()
 
 
 def load_model_and_tokenizer(
     model_name: str,
-    torch_dtype: torch.dtype = torch.float16,
+    dtype: torch.dtype = torch.float16,
     device_map: str | dict | None = "auto",
     attn_implementation: str = "sdpa",
 ):
@@ -30,7 +29,7 @@ def load_model_and_tokenizer(
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch_dtype,
+        dtype=dtype,                    # torch_dtype= is deprecated since 4.56
         device_map=device_map,
         attn_implementation=attn_implementation,
     )
@@ -54,6 +53,20 @@ def system_prompt_for(model_name: str) -> str:
     return "You are a helpful assistant."
 
 
+def build_chat_prompt(tokenizer, user_input: str, system_prompt: str | None,
+                      chat_kwargs: dict | None = None) -> str:
+    """Chat-formatted prompt, or the bare input for a base model with no template."""
+    if not tokenizer.chat_template:
+        return user_input
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": user_input})
+    return tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True, **(chat_kwargs or {}),
+    )
+
+
 @torch.no_grad()
 def persona_steered_generate(
     model,
@@ -69,19 +82,7 @@ def persona_steered_generate(
     system_prompt: str | None = None,
 ) -> str:
     """Generate one LaMP answer; if persona_vector & alpha != 0, apply steering."""
-    chat_kwargs = chat_kwargs or {}
-
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": user_input})
-
-    if tokenizer.chat_template:
-        prompt = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True, **chat_kwargs,
-        )
-    else:
-        prompt = user_input
+    prompt = build_chat_prompt(tokenizer, user_input, system_prompt, chat_kwargs)
 
     enc = tokenizer(prompt, return_tensors="pt", truncation=True,
                     max_length=max_input_len).to(next(model.parameters()).device)

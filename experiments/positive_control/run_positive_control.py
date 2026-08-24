@@ -41,10 +41,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src import (
-    FactExtractor, LaMPDataset, PersonaSteering, PersonaVectors,
-    chat_kwargs_for, compute_metric, get_decoder_layers,
-    load_model_and_tokenizer, persona_steered_generate, system_prompt_for,
-    task_info,
+    FactExtractor, LaMPDataset, PersonaVectors,
+    chat_kwargs_for, compute_metric, get_decoder_layers, higher_is_better,
+    load_model_and_tokenizer, persona_steered_generate, primary_value,
+    system_prompt_for, task_info,
 )
 
 
@@ -76,7 +76,8 @@ def extract_vectors(
             )
             out.append(v.cpu().float().numpy())
         except RuntimeError as e:
-            print(f"  user {i}: extract failed ({e}) — skipping")
+            # zero-fill, not skip: template and fact must stay index-aligned
+            print(f"  user {i}: extract failed ({e}) — zero-filling")
             out.append(np.zeros(model.config.hidden_size, dtype=np.float32))
         if (i + 1) % 5 == 0:
             print(f"  vectors {i+1}/{len(samples)} ({time.time()-t0:.0f}s)")
@@ -170,16 +171,6 @@ def run_steering_eval(
     return preds, refs
 
 
-def primary(metric_name: str, value: dict) -> float:
-    if metric_name == "accuracy":
-        return value["accuracy"]
-    if metric_name == "regression":
-        return value["mae"]
-    if metric_name == "rouge":
-        return value["ROUGE-L"]
-    return float("nan")
-
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -266,7 +257,7 @@ def main():
         max_new_tokens=info["max_new_tokens"], label="zs",
     )
     zs_metric = compute_metric(metric, zs_preds, zs_refs)
-    zs_p = primary(metric, zs_metric)
+    zs_p = primary_value(metric, zs_metric)
     print(f"  zero-shot: {zs_metric}")
 
     tmpl_preds, tmpl_refs = run_steering_eval(
@@ -276,7 +267,7 @@ def main():
         max_new_tokens=info["max_new_tokens"], label="template",
     )
     tmpl_metric = compute_metric(metric, tmpl_preds, tmpl_refs)
-    tmpl_p = primary(metric, tmpl_metric)
+    tmpl_p = primary_value(metric, tmpl_metric)
     print(f"  template steering: {tmpl_metric}")
 
     fact_preds, fact_refs = run_steering_eval(
@@ -286,7 +277,7 @@ def main():
         max_new_tokens=info["max_new_tokens"], label="fact",
     )
     fact_metric_v = compute_metric(metric, fact_preds, fact_refs)
-    fact_p = primary(metric, fact_metric_v)
+    fact_p = primary_value(metric, fact_metric_v)
     print(f"  fact steering: {fact_metric_v}")
 
     # ---- Step 6: save
@@ -298,7 +289,7 @@ def main():
     np.savez_compressed(npz_path,
                         template=template_vectors, fact=fact_vectors)
 
-    sign = -1 if metric == "regression" else 1   # MAE: lower is better
+    sign = 1 if higher_is_better(metric) else -1   # MAE: lower is better
     payload = {
         "model": args.model,
         "task": args.task,

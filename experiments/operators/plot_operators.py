@@ -11,14 +11,12 @@ Output: figures/fig_operators_comparison.pdf
 
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -153,7 +151,6 @@ def main():
 
 def plot_lamp2_fact(ax):
     """LaMP-2 fact n=323: Op1 (k=1,5,10), Op2, Op3 routing τ=0.25."""
-    proj = collect_proj("LaMP-2", n_users=323)
     p2 = ROOT / "results/operators/rank1_edit_LaMP-2_Qwen3-8B_fact_n323.json"
     p3 = ROOT / "results/operators/routing_LaMP-2_Qwen3-8B_fact_n323.json"
     # Override path for fact variant
