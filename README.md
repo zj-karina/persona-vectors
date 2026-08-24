@@ -1,7 +1,6 @@
 # Per-User Persona Vectors for LLM Personalization
 
 > **Paper:** "Per-User Persona Vectors: Are Individual Identities Linear Directions in LLM Activation Space?"
-> **Venue:** Mechanistic Interpretability Workshop @ ICML 2026
 
 ## Hypothesis
 
