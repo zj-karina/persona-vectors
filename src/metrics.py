@@ -13,16 +13,12 @@ from rouge_score import rouge_scorer
 
 
 def _safe_float(s, default: float = 0.0) -> float:
-    try:
-        s = str(s).strip()
-        m = re.search(r"-?\d+\.?\d*", s)
-        if m:
-            v = float(m.group())
-            return v if np.isfinite(v) else default
-        v = float(s)
-        return v if np.isfinite(v) else default
-    except (ValueError, AttributeError, TypeError):
+    """LaMP-3 predictions are free text; pull the first number out of them."""
+    m = re.search(r"-?\d+\.?\d*", str(s))
+    if not m:
         return default
+    v = float(m.group())
+    return v if np.isfinite(v) else default
 
 
 def compute_accuracy(preds, labels) -> dict:
@@ -65,3 +61,22 @@ def compute_metric(metric: str, preds, labels) -> dict:
     if metric == "rouge":
         return compute_rouge(preds, labels)
     raise ValueError(f"Unknown metric: {metric}")
+
+
+_PRIMARY = {"accuracy": ("accuracy", "Accuracy"),
+            "regression": ("mae", "MAE"),
+            "rouge": ("ROUGE-L", "ROUGE-L")}
+
+
+def primary_value(metric: str, value: dict) -> float:
+    """The headline number of a metric dict — what tables and plots report."""
+    return float(value[_PRIMARY[metric][0]])
+
+
+def primary_label(metric: str) -> str:
+    return _PRIMARY[metric][1]
+
+
+def higher_is_better(metric: str) -> bool:
+    """False for regression only: LaMP-3 is scored by MAE."""
+    return metric != "regression"

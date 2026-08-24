@@ -1,19 +1,16 @@
-"""Standalone template-vector extraction — no downstream inference.
+"""Extract template-based persona vectors and nothing else.
 
-Used to extend the sample size beyond the n=30 saved during the original
-positive-control runs.  Saves to results/positive_control/vectors_*.npz
-in the same shape (template field).  Idempotent: if the npz exists,
-it loads it and only extracts new users beyond its length.
+The positive-control runs saved vectors for the first 30 users only; this
+extends that set without re-running the downstream evaluation. It reads the
+existing .npz, extracts the users beyond its current length, and writes the
+merged array back, so an interrupted run can simply be restarted.
 
-Usage:
-    python scripts/extract_template_vectors.py \\
-        --model Qwen/Qwen3-8B --task LaMP-7 --layer_idx 13 --n_users 200
+    python scripts/extract_template_vectors.py --task LaMP-7 --n_users 200
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 from pathlib import Path
@@ -31,44 +28,34 @@ from src import (
 
 
 def main():
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
     ap.add_argument("--task", default="LaMP-7")
     ap.add_argument("--layer_idx", type=int, default=13)
     ap.add_argument("--n_users", type=int, default=200)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--output_npz",
-                    default=None)
+    ap.add_argument("--output_npz", default=None)
     args = ap.parse_args()
 
-    if args.output_npz is None:
-        short = args.model.split("/")[-1]
-        args.output_npz = str(ROOT / "results/positive_control"
-                               / f"vectors_{short}_{args.task}.npz")
+    short = args.model.split("/")[-1]
+    out_path = Path(args.output_npz or
+                    ROOT / "results/positive_control" / f"vectors_{short}_{args.task}.npz")
 
-    torch.manual_seed(args.seed); np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
-    chat_kwargs = chat_kwargs_for(args.model)
-
-    # 1. Load any existing vectors (idempotency)
-    out_path = Path(args.output_npz)
     existing = {}
     if out_path.exists():
         d = np.load(out_path)
-        existing = {k: d[k] for k in d.keys()}
+        existing = {k: d[k] for k in d}
         print(f"  loaded existing {len(existing.get('template', []))} template "
-              f"and {len(existing.get('fact', []))} fact vectors from "
-              f"{out_path.name}")
+              f"and {len(existing.get('fact', []))} fact vectors from {out_path.name}")
 
     n_existing = len(existing.get("template", []))
     if n_existing >= args.n_users:
         print(f"already have {n_existing} ≥ requested {args.n_users}; nothing to do.")
         return
 
-    # 2. Load dataset (dedup'd) and slice the new users
     dataset = LaMPDataset(task=args.task, split="val", n_samples=args.n_users,
                           data_dir=str(ROOT / "data"), unique_users=True)
     samples = list(dataset)
@@ -81,13 +68,10 @@ def main():
     print(f"  extracting {len(new_samples)} new template vectors "
           f"(users {n_existing}..{args.n_users-1})")
 
-    # 3. Load model
     model, tokenizer = load_model_and_tokenizer(args.model)
-
-    # 4. Extract
     pv = PersonaVectors(
         model=model, tokenizer=tokenizer, layer_idx=args.layer_idx,
-        max_new_tokens=50, chat_template_kwargs=chat_kwargs,
+        max_new_tokens=50, chat_template_kwargs=chat_kwargs_for(args.model),
     )
     extraction_questions = dataset.sample_train_inputs(k=1, seed=args.seed)
 
@@ -101,27 +85,25 @@ def main():
                 extraction_questions=extraction_questions,
             ).cpu().float().numpy()
         except RuntimeError as e:
+            # Keep the row so user indices stay aligned with the fact vectors.
             print(f"  user {n_existing + i}: extract failed ({e}); zero-filling")
             v = np.zeros(model.config.hidden_size, dtype=np.float32)
         new_vectors.append(v)
         if (i + 1) % 5 == 0:
             elapsed = time.time() - t0
             rate = elapsed / (i + 1)
-            eta = rate * (len(new_samples) - (i + 1))
             print(f"  {n_existing + i + 1}/{args.n_users}  "
-                  f"({elapsed:.0f}s, rate={rate:.1f}s/u, eta={eta:.0f}s)")
-    new_vectors = np.stack(new_vectors, axis=0)
+                  f"({elapsed:.0f}s, rate={rate:.1f}s/u, "
+                  f"eta={rate * (len(new_samples) - i - 1):.0f}s)")
 
-    # 5. Save merged
+    merged = np.stack(new_vectors, axis=0)
     if "template" in existing:
-        merged_t = np.concatenate([existing["template"], new_vectors], axis=0)
-    else:
-        merged_t = new_vectors
-    save = {"template": merged_t}
+        merged = np.concatenate([existing["template"], merged], axis=0)
+    save = {"template": merged}
     if "fact" in existing:
-        save["fact"] = existing["fact"]   # untouched
+        save["fact"] = existing["fact"]
     np.savez_compressed(out_path, **save)
-    print(f"\nsaved {out_path}  (template: {len(merged_t)}, "
+    print(f"\nsaved {out_path}  (template: {len(merged)}, "
           f"fact: {len(save.get('fact', []))})")
 
 

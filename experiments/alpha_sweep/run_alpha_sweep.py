@@ -1,17 +1,15 @@
-"""α (steering strength) sweep on LaMP-2 with n=200, optimal layer.
+"""Steering-strength sweep at the best layer.
 
-Why: in the smoke run α∈{0.5, 1.0, 1.5, 2.0} all collapsed to nearly identical
-predictions, suggesting α may simply be too small relative to residual stream
-norm. We test α∈{0, 0.5, 1, 2, 4, 8, 16} to map the steering response curve.
-
-Large α may degrade base capability (paper §6) — we expect a peak then decay.
+In the smoke run α ∈ {0.5, 1.0, 1.5, 2.0} produced near-identical predictions,
+which suggests α may simply be small next to the residual-stream norm. This
+widens the grid to α ≤ 16 to map the whole response curve; large α is expected
+to degrade the base task, so a peak followed by collapse is the shape to look for.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from datetime import datetime
@@ -24,25 +22,14 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src import (
-    LaMPDataset, PersonaVectors, compute_metric, load_model_and_tokenizer,
-    persona_steered_generate, chat_kwargs_for, system_prompt_for, task_info,
+    LaMPDataset, PersonaVectors, best_layer, compute_metric,
+    load_model_and_tokenizer, persona_steered_generate, chat_kwargs_for,
+    system_prompt_for, task_info,
 )
-
-
-def load_optimal_layer(model_name, task, results_dir, fallback=16):
-    short = model_name.split("/")[-1]
-    p = results_dir / "layer_search" / f"layer_search_{short}_{task}.json"
-    if p.exists():
-        with open(p) as f:
-            return int(json.load(f)["best_layer"]["layer_idx"])
-    return fallback
 
 
 @torch.no_grad()
 def main():
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
     ap.add_argument("--task", default="LaMP-2")
@@ -57,13 +44,11 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    info = task_info(args.task)
-    metric = info["metric"]
+    metric = task_info(args.task)["metric"]
     chat_kwargs = chat_kwargs_for(args.model)
     system_prompt = system_prompt_for(args.model)
-
-    layer_idx = args.layer_idx if args.layer_idx is not None else \
-        load_optimal_layer(args.model, args.task, ROOT / "results")
+    layer_idx = (args.layer_idx if args.layer_idx is not None
+                 else best_layer(args.model, args.task, fallback=16))
 
     print(f"=== α-sweep: {args.model} / {args.task} / layer {layer_idx} ===")
     model, tokenizer = load_model_and_tokenizer(args.model)
@@ -71,7 +56,7 @@ def main():
                           data_dir=str(ROOT / "data"))
     extraction_questions = dataset.sample_train_inputs(k=1, seed=args.seed)
 
-    # Extract per-user vectors ONCE — reuse across all alphas (vectors don't depend on α).
+    # Vectors do not depend on α, so extract once and reuse across the grid.
     pv = PersonaVectors(model=model, tokenizer=tokenizer, layer_idx=layer_idx,
                         max_new_tokens=50, chat_template_kwargs=chat_kwargs)
     print("Extracting per-user vectors (shared across α values)...")
@@ -96,11 +81,10 @@ def main():
         preds, refs = [], []
         t0 = time.time()
         for i, s in enumerate(dataset):
-            v = user_vectors[i]
             pred = persona_steered_generate(
                 model, tokenizer,
                 user_input=s["input_text"],
-                persona_vector=v, layer_idx=layer_idx, alpha=alpha,
+                persona_vector=user_vectors[i], layer_idx=layer_idx, alpha=alpha,
                 max_new_tokens=dataset.max_new_tokens,
                 chat_kwargs=chat_kwargs, system_prompt=system_prompt,
             )

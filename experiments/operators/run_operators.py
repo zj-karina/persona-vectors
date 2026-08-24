@@ -1,34 +1,25 @@
-"""Alternative steering operators for per-user persona vectors.
+"""Preprocessing the persona vector before it is injected.
 
-Baseline: single-layer additive steering at constant α.
-This script tests modifications to the *vector preprocessing* before injection
-and to the injection rule itself.  Pluggable via --operator.
+The baseline injects v_user as extracted. Two alternatives are implemented here,
+both selected with --operator:
 
-Operators implemented:
+  proj_nuisance  Fit a top-k PCA basis B over all user vectors and steer with
+                 v - B Bᵀ v. The leading components carry variance shared by
+                 every user (the "act as this author" template direction among
+                 them), so removing them should leave what is specific to a user.
+  norm_fixed     Rescale every vector to the same L2 norm, to test whether the
+                 fact-vs-template gap is really about ‖v‖ — fact prompts are
+                 longer and produce longer vectors, so at a constant α they
+                 perturb the residual stream harder.
 
-* `additive` (baseline) -- h_l += α v_user (canonical persona-vector
-  steering).
-* `proj_nuisance` (Operator 1) -- compute a top-k PCA basis B of *all*
-  user vectors, then steer with v_clean = v_user - B Bᵀ v_user.  The PCA
-  directions capture variance shared across users (often a dominant
-  ``act-as-author'' template direction); projecting them out leaves the
-  user-specific component.
-
-Future operators (e.g.\ multi-layer, per-token scaling) plug in here by
-extending `make_steering_vector(...)` and/or the steering loop.
-
-Usage:
-    python experiments/operators/run_operators.py \\
-        --task LaMP-7 --model Qwen/Qwen3-8B --layer_idx 13 \\
-        --variant template --operator proj_nuisance --pca_k 5 \\
-        --alphas 0.0 0.5 1.0 1.5 2.0 --n_users 500
+    python experiments/operators/run_operators.py --task LaMP-7 \
+        --operator proj_nuisance --pca_k 5 --n_users 500
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from datetime import datetime
@@ -47,32 +38,18 @@ from src import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Operators — turn raw user vectors into "clean" per-user steering vectors.
-# ---------------------------------------------------------------------------
-
-
 def op_additive(vectors: np.ndarray, **_) -> tuple[np.ndarray, dict]:
-    """Identity transform — canonical persona-vector additive steering."""
+    """The canonical operator: inject the vector unchanged."""
     return vectors, {"name": "additive", "params": {}}
 
 
 def op_proj_nuisance(vectors: np.ndarray, *, pca_k: int) -> tuple[np.ndarray, dict]:
-    """Project out the top-k PCA directions of the population from each user vector.
-
-    The top-k PCs capture variance shared *across* users (template direction,
-    backbone biases).  Removing them keeps only user-specific residual.
-    """
-    n, d = vectors.shape
-    centroid = vectors.mean(axis=0, keepdims=True)
-    centered = vectors - centroid
-    # Truncated SVD: U S Vt = centered;  the right-singular-vectors V are the
-    # PCA directions in feature space.
+    centered = vectors - vectors.mean(axis=0, keepdims=True)
     _, _, Vt = np.linalg.svd(centered, full_matrices=False)
-    B = Vt[:pca_k]                        # [k, d]
-    # Project EACH original vector (not centered) to keep magnitude consistent
-    # with the additive baseline; only directionally remove B-span.
-    proj = vectors @ B.T @ B              # [n, d]
+    B = Vt[:pca_k]
+    # Project the original vectors rather than the centred ones, so magnitudes
+    # stay comparable with the additive baseline and only direction changes.
+    proj = vectors @ B.T @ B
     cleaned = vectors - proj
     info = {
         "name": "proj_nuisance",
@@ -93,15 +70,10 @@ def op_proj_nuisance(vectors: np.ndarray, *, pca_k: int) -> tuple[np.ndarray, di
 
 def op_norm_fixed(vectors: np.ndarray, *, target_norm: float | None = None,
                   ) -> tuple[np.ndarray, dict]:
-    """Rescale each user vector to a fixed L2 norm to test whether the
-    overshoot mechanism (longer prompts -> larger ||v||) explains
-    fact-vs-template downstream gaps. If target_norm is None, use the
-    population median of ||v_u||."""
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     if target_norm is None:
         target_norm = float(np.median(norms))
-    scale = target_norm / norms.clip(min=1e-8)
-    rescaled = vectors * scale
+    rescaled = vectors * (target_norm / norms.clip(min=1e-8))
     info = {
         "name": "norm_fixed",
         "params": {
@@ -121,11 +93,6 @@ OPERATORS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Eval loop
-# ---------------------------------------------------------------------------
-
-
 @torch.no_grad()
 def eval_alpha(
     model, tokenizer, samples, vectors, *,
@@ -135,23 +102,21 @@ def eval_alpha(
     preds, refs = [], []
     t0 = time.time()
     for i, (s, v) in enumerate(zip(samples, vectors)):
-        v_t = torch.from_numpy(v) if alpha != 0 else None
         pred = persona_steered_generate(
             model, tokenizer, user_input=s["input_text"],
-            persona_vector=v_t, layer_idx=layer_idx, alpha=alpha,
+            persona_vector=torch.from_numpy(v) if alpha != 0 else None,
+            layer_idx=layer_idx, alpha=alpha,
             max_new_tokens=max_new_tokens,
             chat_kwargs=chat_kwargs, system_prompt=system_prompt,
         )
-        preds.append(pred); refs.append(s["output_text"].strip())
+        preds.append(pred)
+        refs.append(s["output_text"].strip())
         if (i + 1) % 50 == 0:
             print(f"    α={alpha} {i+1}/{len(samples)} ({time.time()-t0:.0f}s)")
     return preds, refs, time.time() - t0
 
 
 def main():
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
     ap.add_argument("--task", default="LaMP-7")
@@ -169,12 +134,13 @@ def main():
     ap.add_argument("--output_dir", default="results/operators")
     args = ap.parse_args()
 
-    torch.manual_seed(args.seed); np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
     short = args.model.split("/")[-1]
     if args.vectors_npz is None:
         args.vectors_npz = str(ROOT / "results/positive_control"
-                                / f"vectors_{short}_{args.task}.npz")
+                               / f"vectors_{short}_{args.task}.npz")
 
     info = task_info(args.task)
     metric = info["metric"]
@@ -184,7 +150,6 @@ def main():
     print(f"=== {args.operator} on {args.model} / {args.task} / {args.variant} ===")
     print(f"  layer={args.layer_idx}  α={args.alphas}  n_users={args.n_users}")
 
-    # 1. Load vectors
     arrs = np.load(args.vectors_npz)
     if args.variant not in arrs:
         raise KeyError(f"{args.variant} not in {args.vectors_npz}: {list(arrs.keys())}")
@@ -194,24 +159,20 @@ def main():
         args.n_users = len(vectors)
     vectors = vectors[: args.n_users]
 
-    # 2. Apply operator transform
     if args.operator == "proj_nuisance":
         cleaned, op_info = OPERATORS[args.operator](vectors, pca_k=args.pca_k)
     else:
         cleaned, op_info = OPERATORS[args.operator](vectors)
     print(f"  operator info: {json.dumps(op_info['params'], indent=2)}")
 
-    # 3. Load dataset
     dataset = LaMPDataset(task=args.task, split="val", n_samples=args.n_users,
                           data_dir=str(ROOT / "data"), unique_users=True)
     samples = list(dataset)
     if len(samples) != len(cleaned):
-        raise ValueError(
-            f"sample/vector mismatch: {len(samples)} vs {len(cleaned)}")
+        raise ValueError(f"sample/vector mismatch: {len(samples)} vs {len(cleaned)}")
 
     model, tokenizer = load_model_and_tokenizer(args.model)
 
-    # 4. Sweep α
     results_per_alpha = []
     for alpha in args.alphas:
         print(f"\n  --- α={alpha} ---")
@@ -228,10 +189,9 @@ def main():
             "wall_seconds": wall, "num_eval": len(refs),
         })
 
-    # 5. Save
     out_dir = ROOT / args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
-    tag = f"{args.operator}"
+    tag = args.operator
     if args.operator == "proj_nuisance":
         tag = f"{tag}_k{args.pca_k}"
     out_path = out_dir / f"{args.task}_{short}_{args.variant}_{tag}_n{args.n_users}.json"

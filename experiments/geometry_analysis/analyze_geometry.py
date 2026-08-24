@@ -1,23 +1,20 @@
-"""Geometric analysis of per-user persona vectors.
+"""Geometry of the extracted per-user vectors.
 
-Three core analyses (the mech-interp meat of the paper):
-    1. Cosine-similarity matrix between extracted user vectors.
-       Low off-diagonal mean ⇒ vectors are distinguishable.
-    2. Magnitude ratio:  ‖v_user‖ / ‖h_residual‖  at the same layer.
-       Tiny ratio ⇒ steering signal is too small to flip argmax tokens
-       (this is the explanation for the ~neutral steering effect).
-    3. PCA(2) projection — visualise the user-vector cloud.
+Three measurements, all at the layer the vectors were extracted from:
 
-Usage:
-    python analyze_geometry.py --model Qwen/Qwen3-8B --task LaMP-2 \\
-        --layer_idx 16 --n_users 100
+  cosine     pairwise similarity between users. A low off-diagonal mean means
+             the vectors actually separate users.
+  magnitude  ‖v_user‖ / ‖h_residual‖. If the ratio is tiny the steering signal
+             cannot move an argmax token, whatever the direction encodes.
+  PCA(2)     a look at the shape of the cloud.
+
+    python analyze_geometry.py --model Qwen/Qwen3-8B --task LaMP-2 --layer_idx 13
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -51,10 +48,7 @@ def extract_user_vectors_and_norms(
         max_new_tokens=50, chat_template_kwargs=chat_kwargs,
     )
 
-    vectors: list[np.ndarray] = []
-    residual_norms: list[float] = []
-    user_indices: list[int] = []
-
+    vectors, residual_norms, user_indices = [], [], []
     t0 = time.time()
     for i, sample in enumerate(dataset):
         if i >= n_users:
@@ -69,7 +63,8 @@ def extract_user_vectors_and_norms(
             print(f"  user {i}: extract failed ({e}) — skipping")
             continue
 
-        # Residual norm at the same layer for the user's input prompt.
+        # Residual norm the vector will be compared against: same layer, same
+        # position the steering hook first sees.
         enc = tokenizer(sample["input_text"], return_tensors="pt", truncation=True,
                         max_length=1024).to(next(model.parameters()).device)
         out = model(**enc, output_hidden_states=True, use_cache=False)
@@ -82,7 +77,7 @@ def extract_user_vectors_and_norms(
             print(f"  extracted {i+1}/{n_users}   ({time.time()-t0:.0f}s)")
 
     return {
-        "vectors": np.stack(vectors, axis=0),  # [N, hidden]
+        "vectors": np.stack(vectors, axis=0),
         "residual_norms": np.array(residual_norms),
         "user_indices": user_indices,
     }
@@ -98,7 +93,6 @@ def analyze(data: dict, *, model_name: str, task: str, layer_idx: int,
     output_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Cosine similarity matrix
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     normed = vectors / np.maximum(norms, 1e-8)
     cos = normed @ normed.T
@@ -126,7 +120,6 @@ def analyze(data: dict, *, model_name: str, task: str, layer_idx: int,
     plt.savefig(figures_dir / f"cosine_sim_{model_short}_{task}.pdf", bbox_inches="tight")
     plt.close()
 
-    # 2. Magnitude analysis
     vector_norms = np.linalg.norm(vectors, axis=1)
     ratio = vector_norms / np.maximum(residual_norms, 1e-8)
     mag_stats = {
@@ -164,7 +157,6 @@ def analyze(data: dict, *, model_name: str, task: str, layer_idx: int,
     plt.savefig(figures_dir / f"magnitude_{model_short}_{task}.pdf", bbox_inches="tight")
     plt.close()
 
-    # 3. PCA(2)
     pca = PCA(n_components=2)
     z = pca.fit_transform(vectors)
     explained = pca.explained_variance_ratio_
@@ -201,15 +193,11 @@ def analyze(data: dict, *, model_name: str, task: str, layer_idx: int,
 
 
 def main():
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
     ap.add_argument("--task", default="LaMP-2")
     ap.add_argument("--layer_idx", type=int, default=16,
-                    help="If omitted, falls back to default; ideally pass best layer "
-                         "from results/layer_search.")
+                    help="Pass the best layer from results/layer_search.")
     ap.add_argument("--n_users", type=int, default=100)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--output_dir", default="results/geometry")

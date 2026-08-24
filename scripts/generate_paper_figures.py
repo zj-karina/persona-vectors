@@ -1,17 +1,8 @@
-"""Build all paper figures (PDF) and tables (LaTeX) from JSON results.
+"""Build the paper's figures and LaTeX tables from the JSON results.
 
-Outputs:
-    figures/fig1_layer_search.pdf       — accuracy vs layer fraction (multi-model)
-    figures/fig2_magnitude.pdf          — magnitude ratio histogram (key mech-interp)
-    figures/fig3_cosine_sim.pdf         — per-user cosine similarity heatmap
-    figures/fig4_main_results.pdf       — bar chart, ZS vs persona × 6 tasks
-    figures/fig5_alpha_curve.pdf        — accuracy vs α on LaMP-2 (sweep curve)
-    figures/fig6_n_questions.pdf        — accuracy vs n_questions (extraction noise)
-    paper/tables/table1_main.tex        — main results table (LaTeX, ACL)
-    paper/tables/table2_layer_search.tex — best layer per (model, task)
-    paper/tables/table3_geometry.tex    — geometry summary across models
+Every step is skipped rather than failed when its results are missing, so this
+can be run at any point during a session and will render whatever exists.
 
-Usage:
     python scripts/generate_paper_figures.py
 """
 
@@ -26,18 +17,24 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from src import primary_label, primary_value
+
 RESULTS = ROOT / "results"
 FIGURES = ROOT / "figures"
 TABLES = ROOT / "paper" / "tables"
 
-FIGURES.mkdir(parents=True, exist_ok=True)
-TABLES.mkdir(parents=True, exist_ok=True)
+TASKS = ["LaMP-1", "LaMP-2", "LaMP-3", "LaMP-4", "LaMP-5", "LaMP-7"]
+BACKBONES = ["Qwen3-8B", "Qwen3-14B", "Mistral-Small-24B"]
 
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
+# Flan-T5-XXL with a trained Q-Former, quoted from the BehavioralTwin runs the
+# training-free setup is being compared against.
+BEHAVIORAL_TWIN = {
+    "LaMP-1": 0.567, "LaMP-2": 0.703, "LaMP-3": 0.251,
+    "LaMP-4": 0.179, "LaMP-5": 0.437, "LaMP-7": 0.403,
+}
 
 
 def load_json(p: Path) -> dict | None:
@@ -51,53 +48,30 @@ def short(model_name: str) -> str:
     return model_name.split("/")[-1].replace("-Instruct-2501", "")
 
 
-def primary_value(metric: str, value: dict) -> float:
-    if metric == "accuracy":
-        return value["accuracy"]
-    if metric == "regression":
-        return value["mae"]
-    if metric == "rouge":
-        return value["ROUGE-L"]
-    return float("nan")
-
-
-def primary_label(metric: str) -> str:
-    return {"accuracy": "Accuracy", "regression": "MAE", "rouge": "ROUGE-L"}[metric]
-
-
-# ---------------------------------------------------------------------------
-# Fig 1 — layer search curves
-# ---------------------------------------------------------------------------
-
-
 def plot_layer_search():
     files = sorted((RESULTS / "layer_search").glob("layer_search_*.json"))
     if not files:
-        print("[fig1] no layer_search results — skipping"); return
+        print("[fig1] no layer_search results — skipping")
+        return
 
     by_task: dict[str, list[dict]] = {}
     for p in files:
         d = load_json(p)
         by_task.setdefault(d["task"], []).append(d)
 
-    n_tasks = len(by_task)
-    fig, axes = plt.subplots(1, n_tasks, figsize=(6 * n_tasks, 4), squeeze=False)
-    axes = axes[0]
-
-    for ax, (task, runs) in zip(axes, by_task.items()):
+    fig, axes = plt.subplots(1, len(by_task), figsize=(6 * len(by_task), 4), squeeze=False)
+    for ax, (task, runs) in zip(axes[0], by_task.items()):
         for d in runs:
             metric = d["results"][0]["metric"] if d["results"] else "accuracy"
-            xs = [r["layer_fraction"] for r in d["results"]]
-            ys = [primary_value(metric, r["value"]) for r in d["results"]]
-            ax.plot(xs, ys, marker="o", linewidth=2, label=short(d["model"]))
-            best = d["best_layer"]
-            ax.axvline(best["layer_fraction"], linestyle="--", alpha=0.4)
-            # Zero-shot reference (dashed horizontal line).
-            zs_val = primary_value(metric, d["zero_shot"]["value"])
-            ax.axhline(zs_val, linestyle=":", color="gray", alpha=0.5,
+            ax.plot([r["layer_fraction"] for r in d["results"]],
+                    [primary_value(metric, r["value"]) for r in d["results"]],
+                    marker="o", linewidth=2, label=short(d["model"]))
+            ax.axvline(d["best_layer"]["layer_fraction"], linestyle="--", alpha=0.4)
+            ax.axhline(primary_value(metric, d["zero_shot"]["value"]),
+                       linestyle=":", color="gray", alpha=0.5,
                        label=f"{short(d['model'])} ZS")
         ax.set_xlabel("Layer (fraction of total depth)")
-        ax.set_ylabel(primary_label(d["results"][0]["metric"]))
+        ax.set_ylabel(primary_label(runs[0]["results"][0]["metric"]))
         ax.set_title(task)
         ax.grid(alpha=0.3)
         ax.legend(fontsize=8)
@@ -105,231 +79,153 @@ def plot_layer_search():
     plt.suptitle("Persona-vector quality vs extraction layer", y=1.02, fontsize=13)
     plt.tight_layout()
     out = FIGURES / "fig1_layer_search.pdf"
-    plt.savefig(out, bbox_inches="tight"); plt.close()
+    plt.savefig(out, bbox_inches="tight")
+    plt.close()
     print(f"[fig1] {out}")
-
-
-# ---------------------------------------------------------------------------
-# Fig 2 — magnitude ratio  (composite across geometry runs)
-# ---------------------------------------------------------------------------
 
 
 def plot_magnitude():
     files = sorted((RESULTS / "geometry").glob("geometry_*.json"))
     if not files:
-        print("[fig2] no geometry results — skipping"); return
+        print("[fig2] no geometry results — skipping")
+        return
 
-    fig, ax = plt.subplots(figsize=(7, 4))
     means, labels = [], []
     for p in files:
         d = load_json(p)
         means.append(d["magnitude"]["mean_magnitude_ratio"])
         labels.append(f"{short(d['model'])}\n{d['task']} L{d['layer_idx']}")
 
+    fig, ax = plt.subplots(figsize=(7, 4))
     ypos = np.arange(len(labels))
     ax.barh(ypos, [m * 100 for m in means], color="steelblue", alpha=0.85)
     for i, m in enumerate(means):
         ax.text(m * 100 + 0.3, i, f"{m:.1%}", va="center", fontsize=9)
-    ax.set_yticks(ypos); ax.set_yticklabels(labels, fontsize=9)
+    ax.set_yticks(ypos)
+    ax.set_yticklabels(labels, fontsize=9)
     ax.set_xlabel(r"$\|v_{\mathrm{user}}\| \, / \, \|h_{\mathrm{residual}}\|$ (%)")
     ax.set_title("Persona vector magnitude relative to residual stream\n"
                  "(steering strength is proportional to this ratio)")
     ax.grid(axis="x", alpha=0.3)
     plt.tight_layout()
     out = FIGURES / "fig2_magnitude.pdf"
-    plt.savefig(out, bbox_inches="tight"); plt.close()
+    plt.savefig(out, bbox_inches="tight")
+    plt.close()
     print(f"[fig2] {out}")
 
 
-# ---------------------------------------------------------------------------
-# Fig 4 — main results bar chart  (uses results/main_table from smoke runs)
-# ---------------------------------------------------------------------------
+def load_smoke_table() -> dict[tuple[str, str], dict]:
+    """{(backbone, task): {experiment: run}} from the n=200 smoke JSONs."""
+    rows: dict[tuple[str, str], dict] = {}
+    for p in (RESULTS / "main_table").glob("*.json"):
+        d = load_json(p)
+        if d:
+            rows.setdefault((short(d["llm"]), d["task"]), {})[d.get("experiment", "?")] = d
+    return rows
 
 
 def plot_main_results():
-    """Read all baseline_/persona_ JSONs from results/main_table and plot."""
-    files = list((RESULTS / "main_table").glob("*.json"))
-    if not files:
-        print("[fig4] no main_table results — skipping"); return
+    smoke = load_smoke_table()
+    if not smoke:
+        print("[fig4] no main_table results — skipping")
+        return
 
-    rows: dict[tuple[str, str], dict] = {}
-    for p in files:
-        d = load_json(p)
-        if not d:
-            continue
-        llm = short(d["llm"])
-        task = d["task"]
-        exp = d.get("experiment", "?")
-        metric = d["result"]["metric"]
-        v = primary_value(metric, d["result"]["value"])
-        rows.setdefault((llm, task), {"metric": metric})[exp] = v
-
-    # tasks order
-    tasks = ["LaMP-1", "LaMP-2", "LaMP-3", "LaMP-4", "LaMP-5", "LaMP-7"]
-    llms = sorted({k[0] for k in rows})
-
-    fig, axes = plt.subplots(1, len(tasks), figsize=(3 * len(tasks), 4), sharey=False)
-    for ax, task in zip(axes, tasks):
-        vals_zs, vals_ps, llabels = [], [], []
+    llms = sorted({llm for llm, _ in smoke})
+    fig, axes = plt.subplots(1, len(TASKS), figsize=(3 * len(TASKS), 4), sharey=False)
+    for ax, task in zip(axes, TASKS):
+        labels, vals_zs, vals_ps = [], [], []
         for llm in llms:
-            r = rows.get((llm, task))
-            if not r:
+            runs = smoke.get((llm, task))
+            if not runs:
                 continue
-            llabels.append(llm)
-            vals_zs.append(r.get("zero_shot_control", float("nan")))
-            vals_ps.append(r.get("persona_steering", float("nan")))
-        x = np.arange(len(llabels))
-        w = 0.35
-        ax.bar(x - w / 2, vals_zs, w, label="Zero-shot", color="lightgray")
-        ax.bar(x + w / 2, vals_ps, w, label="Persona α=1", color="steelblue")
+            labels.append(llm)
+            for exp, target in (("zero_shot_control", vals_zs),
+                                ("persona_steering", vals_ps)):
+                run = runs.get(exp)
+                target.append(primary_value(run["result"]["metric"], run["result"]["value"])
+                              if run else float("nan"))
+        x = np.arange(len(labels))
+        ax.bar(x - 0.175, vals_zs, 0.35, label="Zero-shot", color="lightgray")
+        ax.bar(x + 0.175, vals_ps, 0.35, label="Persona α=1", color="steelblue")
         ax.set_xticks(x)
-        ax.set_xticklabels([l.replace("Mistral-Small-24B", "Mistral-24B")
-                            for l in llabels], rotation=30, fontsize=8)
+        ax.set_xticklabels([l.replace("Mistral-Small-24B", "Mistral-24B") for l in labels],
+                           rotation=30, fontsize=8)
         ax.set_title(task, fontsize=10)
         ax.grid(axis="y", alpha=0.3)
-        if task == tasks[0]:
+        if task == TASKS[0]:
             ax.set_ylabel("Primary metric")
             ax.legend(fontsize=8)
     plt.suptitle("Zero-shot vs persona-steered, smoke n=200", y=1.02)
     plt.tight_layout()
     out = FIGURES / "fig4_main_results.pdf"
-    plt.savefig(out, bbox_inches="tight"); plt.close()
+    plt.savefig(out, bbox_inches="tight")
+    plt.close()
     print(f"[fig4] {out}")
 
 
-# ---------------------------------------------------------------------------
-# Fig 5 — α-sweep curve
-# ---------------------------------------------------------------------------
-
-
-def plot_alpha_sweep():
-    files = sorted((RESULTS / "alpha_sweep").glob("alpha_sweep_*.json"))
+def _sweep_figure(subdir: str, glob: str, x_key: str, xlabel: str, title: str,
+                  out_name: str, tag: str, marker: str, log_x: bool = False):
+    files = sorted((RESULTS / subdir).glob(glob))
     if not files:
-        print("[fig5] no alpha_sweep results — skipping"); return
+        print(f"[{tag}] no {subdir} results — skipping")
+        return
 
     fig, ax = plt.subplots(figsize=(7, 4))
+    metric = "accuracy"
     for p in files:
         d = load_json(p)
         metric = d["results"][0]["metric"]
-        xs = [r["alpha"] for r in d["results"]]
-        ys = [primary_value(metric, r["value"]) for r in d["results"]]
-        ax.plot(xs, ys, marker="o", label=f"{short(d['model'])} / {d['task']} L{d['layer_idx']}")
-    ax.set_xlabel(r"$\alpha$ (steering scale)")
+        ax.plot([r[x_key] for r in d["results"]],
+                [primary_value(metric, r["value"]) for r in d["results"]],
+                marker=marker,
+                label=f"{short(d['model'])} / {d['task']} L{d['layer_idx']}")
+    if log_x:
+        ax.set_xscale("log")
+    ax.set_xlabel(xlabel)
     ax.set_ylabel(primary_label(metric))
-    ax.set_title("Persona steering response curve")
-    ax.grid(alpha=0.3)
+    ax.set_title(title)
+    ax.grid(alpha=0.3, which="both" if log_x else "major")
     ax.legend(fontsize=8)
     plt.tight_layout()
-    out = FIGURES / "fig5_alpha_curve.pdf"
-    plt.savefig(out, bbox_inches="tight"); plt.close()
-    print(f"[fig5] {out}")
-
-
-# ---------------------------------------------------------------------------
-# Fig 6 — n_questions
-# ---------------------------------------------------------------------------
-
-
-def plot_n_questions():
-    files = sorted((RESULTS / "n_questions").glob("n_questions_*.json"))
-    if not files:
-        print("[fig6] no n_questions results — skipping"); return
-
-    fig, ax = plt.subplots(figsize=(7, 4))
-    for p in files:
-        d = load_json(p)
-        metric = d["results"][0]["metric"]
-        xs = [r["n_questions"] for r in d["results"]]
-        ys = [primary_value(metric, r["value"]) for r in d["results"]]
-        ax.plot(xs, ys, marker="s", label=f"{short(d['model'])} / {d['task']} L{d['layer_idx']}")
-    ax.set_xscale("log")
-    ax.set_xlabel("Number of extraction questions")
-    ax.set_ylabel(primary_label(metric))
-    ax.set_title("Persona-vector quality vs extraction noise")
-    ax.grid(alpha=0.3, which="both")
-    ax.legend(fontsize=8)
-    plt.tight_layout()
-    out = FIGURES / "fig6_n_questions.pdf"
-    plt.savefig(out, bbox_inches="tight"); plt.close()
-    print(f"[fig6] {out}")
-
-
-# ---------------------------------------------------------------------------
-# Tables
-# ---------------------------------------------------------------------------
+    out = FIGURES / out_name
+    plt.savefig(out, bbox_inches="tight")
+    plt.close()
+    print(f"[{tag}] {out}")
 
 
 def make_table_main():
-    """Build LaTeX table from results/main_table + results/full_run."""
-    smoke_files = list((RESULTS / "main_table").glob("*.json"))
-    full_files = list((RESULTS / "full_run").glob("*.json"))
+    smoke = load_smoke_table()
+    body = [
+        r"\multicolumn{7}{l}{\textit{Trained baseline (Flan-T5-XXL, Q-Former)}} \\",
+        "BehavioralTwin & " + " & ".join(f"{BEHAVIORAL_TWIN[t]:.3f}" for t in TASKS) + r" \\",
+        r"\midrule",
+    ]
 
-    # smoke rows
-    smoke: dict[tuple[str, str], dict] = {}
-    for p in smoke_files:
-        d = load_json(p)
-        if not d:
-            continue
-        smoke.setdefault((short(d["llm"]), d["task"]), {})[d.get("experiment", "?")] = d
-
-    rows = (
-        ("Trained baselines (Flan-T5-XXL frozen, Q-Former trained)", [
-            ("BehavioralTwin", {
-                "LaMP-1": ("0.567", False), "LaMP-2": ("0.703", False),
-                "LaMP-3": ("0.251", False), "LaMP-4": ("0.179", False),
-                "LaMP-5": ("0.437", False), "LaMP-7": ("0.403", False),
-            }),
-        ]),
-    )
-
-    # Stub LaTeX — replaced lazily based on available data.
-    body_lines: list[str] = []
-
-    def fmt_val(metric, val):
-        if val is None:
-            return "--"
-        return f"{primary_value(metric, val):.3f}"
-
-    backbones = ["Qwen3-8B", "Qwen3-14B", "Mistral-Small-24B"]
-    tasks = ["LaMP-1", "LaMP-2", "LaMP-3", "LaMP-4", "LaMP-5", "LaMP-7"]
-    metric_per_task = {
-        "LaMP-1": "accuracy", "LaMP-2": "accuracy", "LaMP-3": "regression",
-        "LaMP-4": "rouge", "LaMP-5": "rouge", "LaMP-7": "rouge",
-    }
-
-    body_lines.append(r"\multicolumn{7}{l}{\textit{Trained baseline (Flan-T5-XXL, Q-Former)}} \\")
-    body_lines.append(r"BehavioralTwin & 0.567 & 0.703 & 0.251 & 0.179 & 0.437 & 0.403 \\")
-    body_lines.append(r"\midrule")
-
-    for bb in backbones:
-        body_lines.append(rf"\multicolumn{{7}}{{l}}{{\textit{{Training-free: {bb} (frozen)}}}} \\")
-        for label, exp in [("Zero-shot", "zero_shot_control"),
-                           (r"Persona ($\alpha{=}1$)", "persona_steering")]:
+    for backbone in BACKBONES:
+        body.append(rf"\multicolumn{{7}}{{l}}{{\textit{{Training-free: {backbone} (frozen)}}}} \\")
+        for label, exp in (("Zero-shot", "zero_shot_control"),
+                           (r"Persona ($\alpha{=}1$)", "persona_steering")):
             cells = []
-            for t in tasks:
-                d = smoke.get((bb, t), {})
-                if exp in d:
-                    metric = d[exp]["result"]["metric"]
-                    cells.append(f"{primary_value(metric, d[exp]['result']['value']):.3f}")
-                else:
-                    cells.append("--")
-            body_lines.append(rf"{label} & {' & '.join(cells)} \\")
-        # delta row
-        delta_cells = []
-        for t in tasks:
-            d = smoke.get((bb, t), {})
-            zs = d.get("zero_shot_control"); ps = d.get("persona_steering")
+            for task in TASKS:
+                run = smoke.get((backbone, task), {}).get(exp)
+                cells.append(f"{primary_value(run['result']['metric'], run['result']['value']):.3f}"
+                             if run else "--")
+            body.append(rf"{label} & {' & '.join(cells)} \\")
+
+        deltas = []
+        for task in TASKS:
+            runs = smoke.get((backbone, task), {})
+            zs, ps = runs.get("zero_shot_control"), runs.get("persona_steering")
             if zs and ps and zs["result"]["metric"] == ps["result"]["metric"]:
-                m = zs["result"]["metric"]
-                delta = primary_value(m, ps["result"]["value"]) - primary_value(m, zs["result"]["value"])
-                # Sign: for MAE (regression), lower is better, so flip.
-                sign = -1 if m == "regression" else 1
-                eff = sign * delta
-                delta_cells.append(f"{eff:+.3f}")
+                metric = zs["result"]["metric"]
+                delta = (primary_value(metric, ps["result"]["value"])
+                         - primary_value(metric, zs["result"]["value"]))
+                # MAE is the primary metric on LaMP-3, where lower is better.
+                deltas.append(f"{(-delta if metric == 'regression' else delta):+.3f}")
             else:
-                delta_cells.append("--")
-        body_lines.append(rf"$\Delta$ & {' & '.join(delta_cells)} \\")
-        body_lines.append(r"\midrule")
+                deltas.append("--")
+        body.append(rf"$\Delta$ & {' & '.join(deltas)} \\")
+        body.append(r"\midrule")
 
     latex = (
         "\\begin{table*}[t]\n"
@@ -342,7 +238,7 @@ def make_table_main():
         " & Acc$\\uparrow$ & Acc$\\uparrow$ & MAE$\\downarrow$ & "
         "R-L$\\uparrow$ & R-L$\\uparrow$ & R-L$\\uparrow$ \\\\\n"
         "\\midrule\n"
-        + "\n".join(body_lines) +
+        + "\n".join(body) +
         "\n\\bottomrule\n\\end{tabular}\n"
         "\\caption{Main results. $\\Delta$ rows show effect of persona steering on the "
         "primary metric (sign-corrected: positive = improvement). Smoke evaluation "
@@ -358,15 +254,16 @@ def make_table_main():
 def make_table_layer_search():
     files = sorted((RESULTS / "layer_search").glob("layer_search_*.json"))
     if not files:
-        print("[tab2] no layer_search results — skipping"); return
+        print("[tab2] no layer_search results — skipping")
+        return
     rows = []
     for p in files:
         d = load_json(p)
-        b = d["best_layer"]
-        metric = b["metric"]
-        rows.append((short(d["model"]), d["task"],
-                     d["n_layers_total"], b["layer_idx"],
-                     b["layer_fraction"], primary_value(metric, b["value"]),
+        best = d["best_layer"]
+        metric = best["metric"]
+        rows.append((short(d["model"]), d["task"], d["n_layers_total"],
+                     best["layer_idx"], best["layer_fraction"],
+                     primary_value(metric, best["value"]),
                      primary_value(metric, d["zero_shot"]["value"])))
     body = "\n".join(
         rf"{m} & {t} & {n} & {li} & {lf:.2f} & {best:.3f} & {zs:.3f} & {best - zs:+.3f} \\"
@@ -388,7 +285,8 @@ def make_table_layer_search():
 def make_table_geometry():
     files = sorted((RESULTS / "geometry").glob("geometry_*.json"))
     if not files:
-        print("[tab3] no geometry results — skipping"); return
+        print("[tab3] no geometry results — skipping")
+        return
     rows = []
     for p in files:
         d = load_json(p)
@@ -418,18 +316,21 @@ def make_table_geometry():
     print(f"[tab3] {out}")
 
 
-# ---------------------------------------------------------------------------
-# Entry
-# ---------------------------------------------------------------------------
-
-
 def main():
+    FIGURES.mkdir(parents=True, exist_ok=True)
+    TABLES.mkdir(parents=True, exist_ok=True)
+
     print("Generating figures and tables...")
     plot_layer_search()
     plot_magnitude()
     plot_main_results()
-    plot_alpha_sweep()
-    plot_n_questions()
+    _sweep_figure("alpha_sweep", "alpha_sweep_*.json", "alpha",
+                  r"$\alpha$ (steering scale)", "Persona steering response curve",
+                  "fig5_alpha_curve.pdf", "fig5", marker="o")
+    _sweep_figure("n_questions", "n_questions_*.json", "n_questions",
+                  "Number of extraction questions",
+                  "Persona-vector quality vs extraction noise",
+                  "fig6_n_questions.pdf", "fig6", marker="s", log_x=True)
     print()
     make_table_main()
     make_table_layer_search()
