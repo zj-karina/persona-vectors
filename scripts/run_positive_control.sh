@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Positive control: template vs fact-based persona vectors.
-# Local Qwen3-8B only. No external APIs.
-#
-# Time budget: ~15-20 min/task. Two tasks (LaMP-2, LaMP-7) ≈ 30-40 min.
+# Template vs fact-based persona vectors on both stylistic tasks.
+# Local Qwen3-8B only, no external APIs. Roughly 15-20 min per task.
 
 set -e
 cd "$(dirname "$0")/.."

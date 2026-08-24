@@ -1,11 +1,5 @@
-"""Three-panel figure: template-based vs fact-based per-user vector geometry.
+"""Template vs fact-based vector geometry, from the .npz run_positive_control saves.
 
-Reads the .npz produced by run_positive_control.py and renders:
-    A) Cosine-similarity histograms (off-diagonal)
-    B) PCA scree plot (cumulative variance)
-    C) PCA(2) scatter with arrows linking the same user across both methods
-
-Usage:
     python plot_comparison.py --model Qwen3-8B --task LaMP-2
 """
 
@@ -26,8 +20,8 @@ sys.path.insert(0, str(ROOT))
 
 
 def off_diag_cos(vecs: np.ndarray) -> np.ndarray:
-    n = np.linalg.norm(vecs, axis=1, keepdims=True)
-    sim = (vecs / np.maximum(n, 1e-8)) @ (vecs / np.maximum(n, 1e-8)).T
+    unit = vecs / np.maximum(np.linalg.norm(vecs, axis=1, keepdims=True), 1e-8)
+    sim = unit @ unit.T
     return sim[~np.eye(len(sim), dtype=bool)]
 
 
@@ -37,7 +31,6 @@ def plot_comparison(template_vectors, fact_vectors, model_name, task, out_path):
     tc = off_diag_cos(template_vectors)
     fc = off_diag_cos(fact_vectors)
 
-    # A — cosine histograms
     axes[0].hist(tc, bins=30, alpha=0.6, color="coral",
                  label=f"Template (μ={tc.mean():.2f})", density=True)
     axes[0].hist(fc, bins=30, alpha=0.6, color="steelblue",
@@ -50,7 +43,6 @@ def plot_comparison(template_vectors, fact_vectors, model_name, task, out_path):
     axes[0].legend(fontsize=9)
     axes[0].set_xlim(-0.2, 1.1)
 
-    # B — PCA scree
     pt = PCA().fit(template_vectors)
     pf = PCA().fit(fact_vectors)
     n_show = min(15, len(template_vectors) - 1)
@@ -67,7 +59,7 @@ def plot_comparison(template_vectors, fact_vectors, model_name, task, out_path):
     axes[1].legend(fontsize=9)
     axes[1].grid(alpha=0.3)
 
-    # C — joint PCA(2) scatter
+    # One PCA fitted on both sets so the arrows are comparable across methods.
     p2 = PCA(n_components=2).fit(np.vstack([template_vectors, fact_vectors]))
     t2 = p2.transform(template_vectors)
     f2 = p2.transform(fact_vectors)
@@ -77,8 +69,8 @@ def plot_comparison(template_vectors, fact_vectors, model_name, task, out_path):
                     label="Fact-based", marker="^")
     for i in range(min(8, len(template_vectors))):
         axes[2].annotate("", xy=(f2[i, 0], f2[i, 1]),
-                        xytext=(t2[i, 0], t2[i, 1]),
-                        arrowprops=dict(arrowstyle="->", color="gray", alpha=0.4))
+                         xytext=(t2[i, 0], t2[i, 1]),
+                         arrowprops=dict(arrowstyle="->", color="gray", alpha=0.4))
     ev = p2.explained_variance_ratio_
     axes[2].set_xlabel(f"PC1 ({ev[0]:.1%})")
     axes[2].set_ylabel(f"PC2 ({ev[1]:.1%})")
@@ -103,15 +95,13 @@ def main():
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
-    if args.vectors_npz is None:
-        args.vectors_npz = str(ROOT / "results" / "positive_control"
-                                / f"vectors_{args.model}_{args.task}.npz")
-    if args.out is None:
-        args.out = str(ROOT / "figures"
-                        / f"fig_positive_control_{args.model}_{args.task}.pdf")
+    npz = args.vectors_npz or str(
+        ROOT / "results/positive_control" / f"vectors_{args.model}_{args.task}.npz")
+    out = args.out or str(
+        ROOT / "figures" / f"fig_positive_control_{args.model}_{args.task}.pdf")
 
-    data = np.load(args.vectors_npz)
-    plot_comparison(data["template"], data["fact"], args.model, args.task, args.out)
+    data = np.load(npz)
+    plot_comparison(data["template"], data["fact"], args.model, args.task, out)
 
 
 if __name__ == "__main__":

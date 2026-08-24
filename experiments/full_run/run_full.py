@@ -1,23 +1,17 @@
-"""Full evaluation on the LaMP val set (1500 examples) for the two tasks
-where smoke runs showed positive persona effect: LaMP-2 and LaMP-7.
+"""Full-split evaluation on the two tasks where the smoke runs showed an effect.
 
-Three runs per call:
-    1. Zero-shot baseline (control).
-    2. Persona steering at the *optimal* layer (read from layer_search results;
-       falls back to a hand-picked default if file not found).
-    3. Persona steering at a *default* layer (the per-config default layer
-       used in the original smoke runs) — for fair before/after comparison.
+Runs three passes over the same examples: a zero-shot control, steering at the
+layer chosen by run_layer_search, and — when that layer differs from the
+hand-picked default the smoke runs used — steering at the default too, so the
+before/after comparison is on identical data.
 
-Usage:
-    python run_full.py --model Qwen/Qwen3-8B  --task LaMP-2
-    python run_full.py --model Qwen/Qwen3-14B --task LaMP-7
+    python run_full.py --model Qwen/Qwen3-8B --task LaMP-2
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from datetime import datetime
@@ -30,12 +24,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src import (
-    LaMPDataset, PersonaVectors, compute_metric, load_model_and_tokenizer,
-    persona_steered_generate, chat_kwargs_for, system_prompt_for, task_info,
-    get_decoder_layers,
+    LaMPDataset, PersonaVectors, best_layer, compute_metric,
+    load_model_and_tokenizer, persona_steered_generate, chat_kwargs_for,
+    system_prompt_for, task_info,
 )
 
-
+# Layers the smoke runs used before the layer search existed.
 DEFAULT_LAYERS = {
     "Qwen3-8B": 18,
     "Qwen3-14B": 20,
@@ -44,19 +38,15 @@ DEFAULT_LAYERS = {
 }
 
 
-def load_optimal_layer(model_name: str, task: str,
-                       results_dir: Path) -> int | None:
-    short = model_name.split("/")[-1]
-    p = results_dir / "layer_search" / f"layer_search_{short}_{task}.json"
-    if not p.exists():
-        return None
-    with open(p) as f:
-        d = json.load(f)
-    return int(d["best_layer"]["layer_idx"])
-
-
 def default_layer(model_name: str) -> int:
     return DEFAULT_LAYERS.get(model_name.split("/")[-1], 16)
+
+
+def _progress(label: str, i: int, total: int, t0: float) -> None:
+    elapsed = time.time() - t0
+    rate = elapsed / (i + 1)
+    print(f"  {label}[{i+1}/{total}] {elapsed:.0f}s rate={rate:.1f}s/ex "
+          f"eta={rate * (total - i - 1):.0f}s")
 
 
 @torch.no_grad()
@@ -82,10 +72,7 @@ def run_eval_loop(
         preds.append(pred)
         refs.append(sample["output_text"].strip())
         if (i + 1) % 50 == 0:
-            elapsed = time.time() - t0
-            rate = elapsed / (i + 1)
-            eta = rate * (len(dataset) - (i + 1))
-            print(f"  [{i+1}/{len(dataset)}] {elapsed:.0f}s rate={rate:.1f}s/ex eta={eta:.0f}s")
+            _progress("", i, len(dataset), t0)
     return preds, refs, time.time() - t0
 
 
@@ -112,17 +99,11 @@ def extract_all_vectors(
             v = None
         out.append(v)
         if (i + 1) % 50 == 0:
-            elapsed = time.time() - t0
-            rate = elapsed / (i + 1)
-            eta = rate * (len(dataset) - (i + 1))
-            print(f"  extract [{i+1}/{len(dataset)}] {elapsed:.0f}s rate={rate:.1f}s/ex eta={eta:.0f}s")
+            _progress("extract ", i, len(dataset), t0)
     return out
 
 
 def main():
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
     ap.add_argument("--task", default="LaMP-2")
@@ -131,16 +112,14 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--output_dir", default="results/full_run")
     ap.add_argument("--skip_default_layer", action="store_true",
-                    help="Skip the default-layer comparison run (saves ~33% time).")
+                    help="Skip the default-layer comparison run (saves ~33%% time).")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    info = task_info(args.task)
-    metric = info["metric"]
-
-    optimal = load_optimal_layer(args.model, args.task, ROOT / "results")
+    metric = task_info(args.task)["metric"]
+    optimal = best_layer(args.model, args.task)
     default = default_layer(args.model)
     chosen_layer = optimal if optimal is not None else default
     print(f"=== Full run: {args.model} on {args.task}, n={args.n_samples}, α={args.alpha} ===")
@@ -152,12 +131,10 @@ def main():
     system_prompt = system_prompt_for(args.model)
 
     model, tokenizer = load_model_and_tokenizer(args.model)
-
     dataset = LaMPDataset(task=args.task, split="val", n_samples=args.n_samples,
                           data_dir=str(ROOT / "data"))
     extraction_questions = dataset.sample_train_inputs(k=1, seed=args.seed)
 
-    # 1) Zero-shot
     print("\n--- Zero-shot ---")
     preds_zs, refs_zs, wall_zs = run_eval_loop(
         model, tokenizer, dataset,
@@ -167,7 +144,6 @@ def main():
     m_zs = compute_metric(metric, preds_zs, refs_zs)
     print(f"  zero-shot {metric}: {m_zs}")
 
-    # 2) Persona @ optimal layer
     print(f"\n--- Persona α={args.alpha} @ layer {chosen_layer} (optimal) ---")
     print("  extracting per-user vectors...")
     vecs_opt = extract_all_vectors(
@@ -183,10 +159,8 @@ def main():
     m_opt = compute_metric(metric, preds_opt, refs_opt)
     print(f"  persona@{chosen_layer} {metric}: {m_opt}")
 
-    # 3) Persona @ default layer (only if different from optimal)
-    m_def = None
-    wall_def = None
-    if (not args.skip_default_layer) and (default != chosen_layer):
+    m_def = wall_def = None
+    if not args.skip_default_layer and default != chosen_layer:
         print(f"\n--- Persona α={args.alpha} @ layer {default} (default) ---")
         vecs_def = extract_all_vectors(
             model, tokenizer, dataset,
@@ -204,23 +178,25 @@ def main():
     out_dir = ROOT / args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"full_{args.model.split('/')[-1]}_{args.task}.json"
-    payload = {
-        "model": args.model, "task": args.task, "n_samples": args.n_samples,
-        "alpha": args.alpha, "seed": args.seed,
-        "metric": metric,
-        "optimal_layer": optimal, "default_layer": default, "chosen_layer": chosen_layer,
-        "zero_shot": {"value": m_zs, "wall_seconds": wall_zs, "num_eval": len(refs_zs),
-                      "sample_preds": preds_zs[:5], "sample_refs": refs_zs[:5]},
-        "persona_optimal": {"layer": chosen_layer, "value": m_opt,
-                            "wall_seconds": wall_opt, "num_eval": len(refs_opt),
-                            "sample_preds": preds_opt[:5], "sample_refs": refs_opt[:5]},
-        "persona_default": (None if m_def is None else {
-            "layer": default, "value": m_def, "wall_seconds": wall_def,
-        }),
-        "timestamp": datetime.now().isoformat(),
-    }
     with open(out_path, "w") as f:
-        json.dump(payload, f, indent=2)
+        json.dump({
+            "model": args.model, "task": args.task, "n_samples": args.n_samples,
+            "alpha": args.alpha, "seed": args.seed,
+            "metric": metric,
+            "optimal_layer": optimal, "default_layer": default,
+            "chosen_layer": chosen_layer,
+            "zero_shot": {"value": m_zs, "wall_seconds": wall_zs,
+                          "num_eval": len(refs_zs),
+                          "sample_preds": preds_zs[:5], "sample_refs": refs_zs[:5]},
+            "persona_optimal": {"layer": chosen_layer, "value": m_opt,
+                                "wall_seconds": wall_opt, "num_eval": len(refs_opt),
+                                "sample_preds": preds_opt[:5],
+                                "sample_refs": refs_opt[:5]},
+            "persona_default": (None if m_def is None else {
+                "layer": default, "value": m_def, "wall_seconds": wall_def,
+            }),
+            "timestamp": datetime.now().isoformat(),
+        }, f, indent=2)
     print(f"\nSaved {out_path}")
 
 

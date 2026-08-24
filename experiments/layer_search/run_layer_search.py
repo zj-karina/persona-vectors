@@ -1,24 +1,17 @@
-"""Layer Search: find the best persona-vector extraction layer per LLM.
+"""Which residual-stream layer gives the most useful persona vector?
 
-For each model: sweep the middle 60% of layers (skip first and last 20%) at
-stride 2, run persona steering on LaMP-2 with n=200 examples, save accuracy
-vs layer index. We pick LaMP-2 because that's where smoke-runs showed the
-biggest persona effect (+10 pp), so the signal-to-noise ratio is best for
-finding the optimal layer.
+Sweeps the middle 60% of layers at stride 2 and evaluates steering at each one,
+against a zero-shot control on the same examples. LaMP-2 is the default task
+because the smoke runs showed the largest persona effect there (+10 pp), so the
+signal-to-noise ratio for picking a layer is best.
 
-Output: results/layer_search/layer_search_<model>_<task>.json with all
-per-layer accuracies plus the argmax in `best_layer`.
-
-Usage:
     python run_layer_search.py --model Qwen/Qwen3-8B --task LaMP-2
-    python run_layer_search.py --model Qwen/Qwen3-14B --task LaMP-2
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -32,16 +25,13 @@ sys.path.insert(0, str(ROOT))
 from src import (
     LaMPDataset, PersonaVectors, compute_metric, load_model_and_tokenizer,
     persona_steered_generate, chat_kwargs_for, system_prompt_for, task_info,
-    get_decoder_layers,
+    get_decoder_layers, higher_is_better, primary_value,
 )
 
 
 def get_layer_grid(model, stride: int = 2) -> list[int]:
-    """Middle 60% of layers (skip first and last 20%), at given stride."""
     n = len(get_decoder_layers(model))
-    start = int(n * 0.2)
-    end = int(n * 0.8)
-    return list(range(start, end, stride))
+    return list(range(int(n * 0.2), int(n * 0.8), stride))
 
 
 def evaluate_with_layer(
@@ -52,14 +42,12 @@ def evaluate_with_layer(
     system_prompt: str,
     extraction_questions: list[str],
 ) -> tuple[list[str], list[str], float]:
-    """Extract per-user vector at layer_idx, generate predictions, return preds, refs, wall."""
     pv = PersonaVectors(
         model=model, tokenizer=tokenizer, layer_idx=layer_idx,
         max_new_tokens=50, chat_template_kwargs=chat_kwargs,
     )
 
-    preds: list[str] = []
-    refs: list[str] = []
+    preds, refs = [], []
     t0 = time.time()
     for i, sample in enumerate(dataset):
         try:
@@ -84,8 +72,7 @@ def evaluate_with_layer(
         preds.append(pred)
         refs.append(sample["output_text"].strip())
         if (i + 1) % 25 == 0:
-            elapsed = time.time() - t0
-            print(f"  layer {layer_idx}: [{i+1}/{len(dataset)}] {elapsed:.0f}s")
+            print(f"  layer {layer_idx}: [{i+1}/{len(dataset)}] {time.time()-t0:.0f}s")
     return preds, refs, time.time() - t0
 
 
@@ -111,14 +98,12 @@ def run_layer_search(
     layers = get_layer_grid(model, stride=stride)
     print(f"Layers to sweep ({len(layers)}): {layers}")
 
-    info = task_info(task)
+    metric = task_info(task)["metric"]
     dataset = LaMPDataset(task=task, split="val", n_samples=n_samples,
                           data_dir=str(ROOT / "data"))
     extraction_questions = dataset.sample_train_inputs(k=1, seed=seed)
-    metric = info["metric"]
 
-    # Zero-shot baseline (control) — no steering, single forward.
-    print(f"\n--- Zero-shot baseline ---")
+    print("\n--- Zero-shot baseline ---")
     preds_zs, refs_zs = [], []
     t0 = time.time()
     for i, s in enumerate(dataset):
@@ -136,6 +121,7 @@ def run_layer_search(
     zs_metric = compute_metric(metric, preds_zs, refs_zs)
     print(f"  zero-shot {metric}: {zs_metric}")
 
+    n_layers_total = len(get_decoder_layers(model))
     results = []
     for layer_idx in layers:
         print(f"\n--- Layer {layer_idx} ---")
@@ -146,7 +132,6 @@ def run_layer_search(
             extraction_questions=extraction_questions,
         )
         m = compute_metric(metric, preds, refs)
-        n_layers_total = len(get_decoder_layers(model))
         results.append({
             "layer_idx": layer_idx,
             "layer_fraction": layer_idx / n_layers_total,
@@ -156,17 +141,8 @@ def run_layer_search(
         })
         print(f"  layer {layer_idx}: {m}")
 
-    # Pick best by primary metric (accuracy maxed; mae minimized; rouge maxed).
-    def primary(v):
-        if metric == "accuracy":
-            return v["value"]["accuracy"]
-        if metric == "regression":
-            return -v["value"]["mae"]
-        if metric == "rouge":
-            return v["value"]["ROUGE-L"]
-        return 0.0
-
-    best = max(results, key=primary)
+    direction = 1 if higher_is_better(metric) else -1
+    best = max(results, key=lambda r: direction * primary_value(metric, r["value"]))
     print(f"\n=== Best layer: {best['layer_idx']} ({best['layer_fraction']:.1%}) ===")
     print(f"    metric: {best['value']}")
 
@@ -181,7 +157,7 @@ def run_layer_search(
             "stride": stride,
             "seed": seed,
             "layers_tested": layers,
-            "n_layers_total": len(get_decoder_layers(model)),
+            "n_layers_total": n_layers_total,
             "zero_shot": {"metric": metric, "value": zs_metric, "num_eval": len(refs_zs)},
             "results": results,
             "best_layer": best,
@@ -190,9 +166,6 @@ def run_layer_search(
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
     ap.add_argument("--task", default="LaMP-2")

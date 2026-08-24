@@ -1,25 +1,20 @@
-"""LaMPDataset — minimal dataset wrapper for persona-vector experiments.
+"""Minimal LaMP wrapper for persona-vector experiments.
 
-Each iteration yields a dict containing the LaMP raw fields plus pre-built
-positive/negative system prompts (positive = profile-derived templates,
-negative = a fixed set of generic baselines).
+Each item carries the raw LaMP fields plus the contrastive system prompts the
+extraction needs: positive prompts built from the user's own profile, negative
+prompts drawn from a fixed generic set.
 
-The original llm-behavior-fusion `LaMPDataset` is much larger because it
-serves the trained Q-Former pipeline; here we keep only what persona-vector
-extraction and inference need.
+The `LaMPDataset` in llm-behavior-fusion is much larger because it feeds a
+trained Q-Former; this keeps only what extraction and steering use.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import random
 from pathlib import Path
-from typing import Iterable, Iterator
-
-
-# ---------------------------------------------------------------------------
-# Templates
-# ---------------------------------------------------------------------------
-
+from typing import Iterator
 
 GENERIC_NEGATIVE_PROMPTS: list[str] = [
     "You are a neutral, generic assistant with no particular preferences.",
@@ -34,12 +29,6 @@ POSITIVE_TEMPLATE = (
     "Reproduce that author's preferences, style, and topical focus.\n"
     "Item: {profile_excerpt}"
 )
-
-
-# ---------------------------------------------------------------------------
-# Task registry
-# ---------------------------------------------------------------------------
-
 
 TASKS: dict[str, dict] = {
     "LaMP-1": {"folder": "LaMP_1", "metric": "accuracy",   "max_new_tokens": 3},
@@ -57,20 +46,19 @@ def task_info(task: str) -> dict:
     return TASKS[task]
 
 
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
+def _profile_key(sample: dict) -> str:
+    profile = json.dumps(sample.get("behavior_profile_text", []), sort_keys=True)
+    return hashlib.md5(profile.encode()).hexdigest()
 
 
 class LaMPDataset:
-    """Iterable LaMP dataset for persona experiments.
+    """Iterable LaMP split with per-item positive/negative system prompts.
 
-    Args:
-        task: e.g. "LaMP-2"
-        split: "train" or "val" (val maps to dev_titles_p6.json)
-        n_samples: cap on number of examples (None = all)
-        data_dir: root data folder (expects subfolders LaMP_{1..7}/)
-        n_positive, n_negative, excerpt_chars: artifact build params
+    `split="val"` reads dev_titles_p6.json, `"train"` reads train_titles_p6.json.
+
+    Set `unique_users=True` to keep one item per distinct profile. LaMP-2 has
+    roughly five test items per user and LaMP-3 several as well, so without it
+    an "n=100 users" run is really n=20 users counted five times.
     """
 
     def __init__(
@@ -84,12 +72,10 @@ class LaMPDataset:
         excerpt_chars: int = 600,
         unique_users: bool = False,
     ):
-        """`unique_users=True` deduplicates by profile hash before truncation —
-        critical for LaMP-2 (≈5 test items per user) and LaMP-3 (multi-item users).
-        """
         info = task_info(task)
         self.task = task
         self.split = split
+        self.data_dir = Path(data_dir)
         self.metric = info["metric"]
         self.max_new_tokens = info["max_new_tokens"]
         self.n_positive = n_positive
@@ -97,26 +83,23 @@ class LaMPDataset:
         self.excerpt_chars = excerpt_chars
 
         fname = "train_titles_p6.json" if split == "train" else "dev_titles_p6.json"
-        path = Path(data_dir) / info["folder"] / fname
+        path = self.data_dir / info["folder"] / fname
         if not path.exists():
             raise FileNotFoundError(path)
-        with open(path, "r") as f:
+        with open(path) as f:
             data = json.load(f)
+
         if unique_users:
             seen: set[str] = set()
-            uniq: list[dict] = []
-            import hashlib as _h
-            for s in data:
-                key = _h.md5(json.dumps(s.get("behavior_profile_text", []),
-                                       sort_keys=True).encode()).hexdigest()
-                if key in seen:
-                    continue
-                seen.add(key)
-                uniq.append(s)
-            data = uniq
-        if n_samples is not None:
-            data = data[:n_samples]
-        self.data = data
+            deduped = []
+            for sample in data:
+                key = _profile_key(sample)
+                if key not in seen:
+                    seen.add(key)
+                    deduped.append(sample)
+            data = deduped
+
+        self.data = data[:n_samples] if n_samples is not None else data
 
     def __len__(self) -> int:
         return len(self.data)
@@ -124,17 +107,16 @@ class LaMPDataset:
     def _build_positive(self, profile_texts: list[str]) -> list[str]:
         if not profile_texts:
             return []
-        out = []
-        for i in range(self.n_positive):
-            item = profile_texts[i % len(profile_texts)][: self.excerpt_chars]
-            out.append(POSITIVE_TEMPLATE.format(profile_excerpt=item))
-        return out
+        return [
+            POSITIVE_TEMPLATE.format(
+                profile_excerpt=profile_texts[i % len(profile_texts)][: self.excerpt_chars]
+            )
+            for i in range(self.n_positive)
+        ]
 
     def _build_negative(self) -> list[str]:
-        neg = list(GENERIC_NEGATIVE_PROMPTS[: self.n_negative])
-        if len(neg) < self.n_negative:
-            neg = (neg * ((self.n_negative // len(neg)) + 1))[: self.n_negative]
-        return neg
+        return [GENERIC_NEGATIVE_PROMPTS[i % len(GENERIC_NEGATIVE_PROMPTS)]
+                for i in range(self.n_negative)]
 
     def __getitem__(self, idx: int) -> dict:
         s = self.data[idx]
@@ -152,17 +134,16 @@ class LaMPDataset:
             yield self[i]
 
     def sample_train_inputs(self, k: int, seed: int = 42) -> list[str]:
-        """Helper: pull k inputs from the *train* split for use as extraction
-        questions. Independent of self.split.
+        """k inputs from the *train* split, to use as extraction questions.
+
+        Independent of self.split, so a val-split dataset can still draw
+        questions the model was never evaluated on.
         """
-        info = task_info(self.task)
-        path = Path("data") / info["folder"] / "train_titles_p6.json"
+        path = self.data_dir / task_info(self.task)["folder"] / "train_titles_p6.json"
         if not path.exists():
             return []
         with open(path) as f:
-            tr = json.load(f)
-        import random
-        rng = random.Random(seed)
-        if k >= len(tr):
-            return [d["input_text"] for d in tr]
-        return [d["input_text"] for d in rng.sample(tr, k)]
+            train = json.load(f)
+        if k >= len(train):
+            return [d["input_text"] for d in train]
+        return [d["input_text"] for d in random.Random(seed).sample(train, k)]

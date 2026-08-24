@@ -1,29 +1,19 @@
-"""ICL (in-context-learning) baseline for personalization.
+"""In-context baseline: give the model the profile as text instead of a vector.
 
-For each user we prepend K profile items as context to the test query and
-generate.  This is the simplest "give the model the same user history that
-the persona vector was extracted from, but in-context rather than as a
-hidden-state perturbation" baseline.
+The `_titles_p6` profiles only contain the article side of each interaction —
+titles or tweet text, never the category or paraphrase the user produced — so
+real input→output demonstrations are not available. The prompt is therefore
+context priming ("here is what this user has read, now answer as they would"),
+which is the standard ICL baseline on personalization benchmarks whose profiles
+carry no labels.
 
-NOTE on demonstrations: the LaMP `_titles_p6` profile we use only contains
-*article-side* fields (titles or tweet text), not the user's chosen
-category / paraphrase.  We therefore *cannot* form true input→output
-demonstrations and instead frame the prompt as
-"here are items the user has previously interacted with [...], now:".
-This is the standard context-priming baseline for personalization
-benchmarks where labels are not in the profile.
-
-Usage:
-    python experiments/icl_baseline/run_icl.py \\
-        --model Qwen/Qwen3-8B --task LaMP-2 \\
-        --K_grid 3 5 6 --n_users 30
+    python experiments/icl_baseline/run_icl.py --task LaMP-2 --K_grid 3 5 6
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from datetime import datetime
@@ -42,7 +32,9 @@ from src import (
 )
 
 
-_TASK_FRAMING: dict[str, str] = {
+# Deliberately worded for context priming, not for the fact-extraction prompt
+# in src.fact_extractor — the committed results depend on this exact text.
+TASK_FRAMING: dict[str, str] = {
     "LaMP-1": "Articles this researcher has cited in past work:",
     "LaMP-2": "Articles this user has previously categorised:",
     "LaMP-3": "Reviews this user has previously written:",
@@ -54,9 +46,8 @@ _TASK_FRAMING: dict[str, str] = {
 
 def build_icl_prompt(profile_items: list[str], test_input: str, K: int,
                      task: str) -> str:
-    framing = _TASK_FRAMING.get(task, "User's history:")
-    items = profile_items[:K]
-    body = "\n".join(f"  {i+1}. {it}" for i, it in enumerate(items))
+    framing = TASK_FRAMING.get(task, "User's history:")
+    body = "\n".join(f"  {i+1}. {item}" for i, item in enumerate(profile_items[:K]))
     return (
         f"{framing}\n\n{body}\n\n"
         f"Given this user's history, complete the following request as they "
@@ -79,16 +70,14 @@ def run_one_K(model, tokenizer, samples, K: int, *,
             max_new_tokens=max_new_tokens,
             chat_kwargs=chat_kwargs, system_prompt=system_prompt,
         )
-        preds.append(pred); refs.append(s["output_text"].strip())
+        preds.append(pred)
+        refs.append(s["output_text"].strip())
         if (i + 1) % 10 == 0:
             print(f"  K={K}  {i+1}/{len(samples)}  ({time.time()-t0:.0f}s)")
     return {"preds": preds, "refs": refs, "wall_seconds": time.time() - t0}
 
 
 def main():
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
     ap.add_argument("--task", default="LaMP-2")
@@ -98,7 +87,8 @@ def main():
     ap.add_argument("--output_dir", default="results/icl_baseline")
     args = ap.parse_args()
 
-    torch.manual_seed(args.seed); np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
     info = task_info(args.task)
     metric = info["metric"]
@@ -118,7 +108,7 @@ def main():
     out_dir = ROOT / args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    all_results = {}
+    summary = {}
     for K in args.K_grid:
         print(f"\n--- K={K} ---")
         run = run_one_K(
@@ -128,11 +118,8 @@ def main():
         )
         m = compute_metric(metric, run["preds"], run["refs"])
         print(f"  K={K}: {m}")
-        all_results[f"K={K}"] = {
-            "value": m, "wall_seconds": run["wall_seconds"],
-            "sample_preds": run["preds"][:5],
-            "sample_refs":  run["refs"][:5],
-        }
+        summary[f"K={K}"] = m
+
         out_path = out_dir / f"{args.task}_icl_k{K}.json"
         with open(out_path, "w") as f:
             json.dump({
@@ -145,8 +132,8 @@ def main():
         print(f"  saved {out_path}")
 
     print("\n=== Summary ===")
-    for k, v in all_results.items():
-        print(f"  {k}: {v['value']}")
+    for k, v in summary.items():
+        print(f"  {k}: {v}")
 
 
 if __name__ == "__main__":

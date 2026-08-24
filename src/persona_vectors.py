@@ -1,15 +1,11 @@
-"""Persona Vectors: paper-faithful extraction + steering for per-user identities.
+"""Persona-vector extraction and steering, adapted to per-user identities.
 
-Implements the algorithm from Rimsky et al. (Anthropic, arXiv:2507.21509),
-adapted for *per-user* personalization rather than global character traits.
+Follows the algorithm of Rimsky et al. (Anthropic, arXiv:2507.21509) but
+substitutes a LaMP user for a character trait: the positive system prompts
+describe one user's history, the negatives describe a generic assistant, and
+the vector is the difference of mean response activations.
 
-Two classes:
-    PersonaVectors  — extract a vector at a given residual-stream layer from
-                      a (positive_prompts, negative_prompts, questions) bundle.
-    PersonaSteering — register a forward hook that adds α·v to that layer.
-
-API designed for the ICML 2026 mech-interp paper experiments. Keep it simple:
-no judges, no filtering — pass artifacts in, get a vector out.
+No judge and no filtering step — artifacts in, one vector out.
 """
 
 from __future__ import annotations
@@ -21,12 +17,8 @@ import torch
 import torch.nn as nn
 
 
-# ---------------------------------------------------------------------------
-# Layer access (works for Llama / Qwen / Mistral / Gemma2 architectures)
-# ---------------------------------------------------------------------------
-
-
 def get_decoder_layers(model: nn.Module) -> nn.ModuleList:
+    """Decoder blocks of a Llama / Qwen / Mistral / Gemma2-style causal LM."""
     base = getattr(model, "model", model)
     if hasattr(base, "layers"):
         return base.layers
@@ -45,29 +37,20 @@ def _replace_layer_hidden(out, new_hidden):
     return new_hidden
 
 
-# ---------------------------------------------------------------------------
-# PersonaVectors — extraction
-# ---------------------------------------------------------------------------
+def _check_layer(model: nn.Module, layer_idx: int) -> None:
+    n_layers = len(get_decoder_layers(model))
+    if not (0 <= layer_idx < n_layers):
+        raise ValueError(f"layer_idx {layer_idx} out of range [0, {n_layers})")
 
 
 class PersonaVectors:
-    """Extract a per-user persona vector at a single residual-stream layer.
+    """Extracts one per-user vector from a single residual-stream layer.
 
-    Algorithm (paper-faithful, Anthropic 2025):
-        1. For each (positive system_prompt, question) pair:
-             generate response, take mean residual-stream activation at
-             `layer_idx` over the response tokens.
-        2. Same for negative system_prompts.
-        3. v = mean(positive_activations) - mean(negative_activations).
+    For every (system prompt, question) pair the model generates a response and
+    we mean-pool the layer's activations over the response tokens; the vector is
+    mean(positive) - mean(negative).
 
-    Args:
-        model: HF AutoModelForCausalLM (Qwen3 / Llama / Mistral / ...).
-        tokenizer: matched tokenizer.
-        layer_idx: which decoder block to extract from (0-indexed).
-        system_prompt: optional default; per-call positive/negative override.
-        max_new_tokens: response length used for activation pooling.
-        device: defaults to next(model.parameters()).device.
-        chat_template_kwargs: e.g. {"enable_thinking": False} for Qwen3.
+    `chat_template_kwargs` is where Qwen3 needs {"enable_thinking": False}.
     """
 
     def __init__(
@@ -90,15 +73,10 @@ class PersonaVectors:
 
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-
-        n_layers = len(get_decoder_layers(self.model))
-        if not (0 <= layer_idx < n_layers):
-            raise ValueError(f"layer_idx {layer_idx} out of range [0, {n_layers})")
-
-    # ----- helpers --------------------------------------------------------
+        _check_layer(model, layer_idx)
 
     def _format_chat(self, system: str, user: str) -> str:
-        if hasattr(self.tokenizer, "apply_chat_template") and self.tokenizer.chat_template:
+        if self.tokenizer.chat_template:
             return self.tokenizer.apply_chat_template(
                 [{"role": "system", "content": system},
                  {"role": "user", "content": user}],
@@ -109,8 +87,7 @@ class PersonaVectors:
 
     @torch.no_grad()
     def _generate_and_pool(self, system: str, question: str) -> torch.Tensor | None:
-        """Generate response, return mean activation at layer_idx over response
-        tokens. Returns None if response is empty."""
+        """Mean activation over the response tokens, or None if nothing was generated."""
         prompt = self._format_chat(system, question)
         enc = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         prompt_len = enc["input_ids"].shape[1]
@@ -125,15 +102,13 @@ class PersonaVectors:
         if full_ids.shape[1] <= prompt_len:
             return None
 
-        # Single forward to grab hidden states (cheaper than caching during generate).
+        # One extra forward beats caching hidden states through generate().
         outputs = self.model(full_ids, output_hidden_states=True, use_cache=False)
-        hs = outputs.hidden_states[self.layer_idx + 1][0]  # [seq_len, hidden]
+        hs = outputs.hidden_states[self.layer_idx + 1][0]
         response_hs = hs[prompt_len:]
         if response_hs.numel() == 0:
             return None
         return response_hs.mean(dim=0).detach().float().cpu()
-
-    # ----- public API -----------------------------------------------------
 
     def extract(
         self,
@@ -141,24 +116,14 @@ class PersonaVectors:
         negative_prompts: Sequence[str],
         extraction_questions: Sequence[str],
     ) -> torch.Tensor:
-        """Return a single persona vector at self.layer_idx.
-
-        Shape: [hidden_dim]. Uses `mean(positive) - mean(negative)`.
-        """
-        pos_acts: list[torch.Tensor] = []
-        neg_acts: list[torch.Tensor] = []
-
-        for sp in positive_prompts:
-            for q in extraction_questions:
-                v = self._generate_and_pool(sp, q)
-                if v is not None:
-                    pos_acts.append(v)
-
-        for sp in negative_prompts:
-            for q in extraction_questions:
-                v = self._generate_and_pool(sp, q)
-                if v is not None:
-                    neg_acts.append(v)
+        """One [hidden_dim] vector at self.layer_idx."""
+        pos_acts, neg_acts = [], []
+        for prompts, acts in ((positive_prompts, pos_acts), (negative_prompts, neg_acts)):
+            for sp in prompts:
+                for q in extraction_questions:
+                    v = self._generate_and_pool(sp, q)
+                    if v is not None:
+                        acts.append(v)
 
         if not pos_acts or not neg_acts:
             raise RuntimeError(
@@ -168,17 +133,10 @@ class PersonaVectors:
         return torch.stack(pos_acts).mean(dim=0) - torch.stack(neg_acts).mean(dim=0)
 
 
-# ---------------------------------------------------------------------------
-# PersonaSteering — inference-time injection
-# ---------------------------------------------------------------------------
-
-
 class PersonaSteering:
-    """Forward-hook injector: add `alpha * vector` to layer_idx residual stream.
+    """Adds `alpha * vector` to one layer's residual stream while decoding.
 
-    Use as a context manager:
-        steering = PersonaSteering(model, layer_idx=16)
-        with steering.hook(vector, alpha=1.0):
+        with PersonaSteering(model, layer_idx=16).hook(vector, alpha=1.0):
             model.generate(...)
     """
 
@@ -186,15 +144,11 @@ class PersonaSteering:
         self.model = model
         self.layer_idx = layer_idx
         self._layers = get_decoder_layers(model)
-        n_layers = len(self._layers)
-        if not (0 <= layer_idx < n_layers):
-            raise ValueError(f"layer_idx {layer_idx} out of range [0, {n_layers})")
+        _check_layer(model, layer_idx)
 
     @contextmanager
     def hook(self, vector: torch.Tensor, alpha: float = 1.0, position: str = "all"):
-        """Register a forward hook on layer self.layer_idx that adds α·v to
-        every residual-stream position (or last token only if position='last').
-        """
+        """`position="all"` steers every token, `"last"` only the final one."""
         if position not in ("all", "last"):
             raise ValueError("position must be 'all' or 'last'")
 
@@ -224,13 +178,12 @@ class PersonaSteering:
             handle.remove()
 
 
-# ---------------------------------------------------------------------------
-# PersonaMonitor — projection score (no generation needed)
-# ---------------------------------------------------------------------------
-
-
 class PersonaMonitor:
-    """Compute hidden_state @ persona_vector at the last prompt token, layer L."""
+    """Scores how much a prompt already points along a persona direction.
+
+    Projects the last prompt token's hidden state at `layer_idx` onto the
+    vector — no generation, so it is cheap enough to run over a whole split.
+    """
 
     def __init__(self, model: nn.Module, layer_idx: int):
         self.model = model
