@@ -1,374 +1,289 @@
 # Per-User Persona Vectors for LLM Personalization
 
-> **Paper:** "Per-User Persona Vectors: Are Individual Identities Linear Directions in LLM Activation Space?"
+Rimsky et al. ([arXiv:2507.21509](https://arxiv.org/abs/2507.21509)) show that a
+character trait like "evil" can be read out of a model's residual stream as a
+single direction, by contrasting activations under prompts that do and do not
+ask for the trait. This repository asks whether the same construction works when
+the trait is a *person*: take one LaMP user, build the positive prompts from
+their own history, and see whether the resulting direction steers the model
+toward the answer that user would give.
 
-## Hypothesis
+The short answer is no, not at the level of a population. Steering at a single
+layer with a single α is not distinguishable from zero-shot on either task where
+it should have worked, and on one of them the richer artifacts make it
+measurably worse. It does work for individual users, at an α that differs from
+user to user — which is the more interesting result, and the one the code here
+is set up to measure.
 
-Per-user behavioral identities form linear directions in LLM residual-stream
-space, analogous to per-trait persona vectors (Rimsky et al., Anthropic 2025,
-[arXiv:2507.21509](https://arxiv.org/abs/2507.21509)).
+## Where it landed
 
-We adapt the paper's algorithm — `mean(positive_acts) - mean(negative_acts)`
-on residual-stream activations under contrastive system prompts — from the
-**per-trait** setting (e.g. "evil") to the **per-user** setting on the
-[LaMP](https://lamp-benchmark.github.io/) personalization benchmark.
+At full sample size (LaMP-2 n=323 unique users, LaMP-7 n=1497), against a
+zero-shot control on the same items:
 
-## Key empirical claims (smoke n=200, paper-faithful artifacts)
+| Method | LaMP-2 acc | p | LaMP-7 ROUGE-L | p |
+|---|---|---|---|---|
+| Zero-shot | 0.582 | — | 0.4262 | — |
+| Steering, template artifacts (α=1) | 0.557 | 0.17 | 0.4279 | 0.11 |
+| Steering, fact artifacts (α=1) | 0.536 | 0.08 | 0.4205 | **0.017** |
+| In-context, K=3 profile items | 0.579 | 1.00 | 0.4279 | 0.49 |
 
-* Persona steering yields **significant gains on stylistic tasks**:
-  +10.2 pp accuracy on LaMP-2 (Qwen3-14B), +2.2 pp ROUGE-L on LaMP-7 (Qwen3-8B).
-* **No improvement** on content-classification tasks (LaMP-1) and
-  short-output generation tasks (LaMP-4, LaMP-5).
-* **Geometric analysis** shows per-user vectors *are* distinguishable
-  (mean off-diagonal cosine < 0.3), but their **magnitude relative to the
-  residual stream is small** (~5–10%), explaining why steering is weak.
-* **Simply replacing Flan-T5-XXL with frozen Qwen3-14B (zero-shot)** already
-  beats the trained Q-Former pipeline on LaMP-2 (+0.10 acc) and LaMP-7 (+0.02 R-L).
+LaMP-2 uses exact McNemar on the discordant pairs, LaMP-7 a paired bootstrap
+over per-user ROUGE-L (B=10000, seed 42); `experiments/significance_tests.py`
+regenerates the table. The only significant effect in it is fact-based steering
+hurting LaMP-7. Giving the model the same profile as text instead of as a vector
+does not help either, which is worth knowing before blaming the steering
+operator for everything.
 
-See `paper/persona_vectors_icml2026.tex` (skeleton) and `figures/` for plots.
+Getting to that table turned up three things that were not obvious going in.
+
+**The vectors are user-specific; the early geometry said otherwise because it
+counted samples, not users.** LaMP-2's dev split contains 1605 items drawn from
+323 profiles, so an "n=100 users" run is really about twenty users repeated five
+times each. Measured that way the vectors look collapsed — mean off-diagonal
+cosine 0.749, 92.7% of variance in two principal components, 59% of pairs above
+0.8. Deduplicating by profile hash first (`unique_users=True`) drops the mean
+cosine to 0.329 with rank-9 at 90% variance. Whatever is failing, it is not that
+the extraction produces the same direction for everyone.
+
+**Replacing the template with concrete facts changes the geometry but not the
+output.** The positive control has the model itself write five distinguishing
+facts per user and uses those as the positive prompt, which on LaMP-7 pulls the
+mean inter-user cosine from 0.413 down to 0.252. Downstream ROUGE-L moves the
+other way, 0.4301 for template artifacts against 0.4249 for facts, with
+zero-shot at 0.4295 between them. Better-separated vectors, same generations.
+
+**Individual users are steerable, at their own α.** Sweeping α per user on
+LaMP-2 with fact artifacts: 188 of 323 users are already right at α=0, and 29 of
+the remaining 135 can be flipped to the gold answer by some α (11 with template
+artifacts). The α that first does it ranges from 0.25 to 2.0, mean 0.66,
+sd 0.44 — so no single global α reaches more than a fraction of them, and the
+population average buries the ones it does reach.
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
-# Source per-machine env (sets HF_HOME, HF_TOKEN, paths):
-source scripts/env.sh
-# Symlink the LaMP data folder if not already present:
+source scripts/env.sh          # HF cache locations, venv, token
 ln -sfn /path/to/lamp-data data
 ```
 
-## Reproducing experiments (in order)
+`data/` is expected to contain `LaMP_{1,2,3,4,5,7}/{train,dev}_titles_p6.json`.
+The runs in `results/` were produced on V100s, hence float16 and SDPA attention
+rather than bf16 and FlashAttention-2.
+
+## Running things
+
+Layer search comes first; everything downstream reads its output through
+`src.best_layer()` and falls back to a hand-picked layer if it has not been run.
 
 ```bash
-# 1. Layer search — finds best extraction layer per LLM
-python experiments/layer_search/run_layer_search.py \
-    --model Qwen/Qwen3-8B --task LaMP-2 --n_samples 200
+python experiments/layer_search/run_layer_search.py --model Qwen/Qwen3-8B --task LaMP-2
+python experiments/geometry_analysis/analyze_geometry.py --model Qwen/Qwen3-8B --task LaMP-2 --layer_idx 13
+```
 
-python experiments/layer_search/run_layer_search.py \
-    --model Qwen/Qwen3-14B --task LaMP-2 --n_samples 200
+The positive control extracts both artifact variants and saves the vectors to
+`results/positive_control/vectors_<model>_<task>.npz`. Every later experiment
+loads that file rather than re-extracting, so run it before the operator and
+per-user sweeps.
 
-# 2. Geometry analysis — runs at the optimal layer from step 1
-python experiments/geometry_analysis/analyze_geometry.py \
-    --model Qwen/Qwen3-8B --task LaMP-2 --layer_idx 16 --n_users 100
+```bash
+bash scripts/run_positive_control.sh                     # LaMP-2 and LaMP-7
+python scripts/extract_template_vectors.py --task LaMP-7 --n_users 1497
+python scripts/extract_fact_vectors.py     --task LaMP-7 --n_users 1497
+```
 
-# 3. Full evaluation (1500 examples) on stylistic tasks
-python experiments/full_run/run_full.py \
-    --model Qwen/Qwen3-8B  --task LaMP-2
-python experiments/full_run/run_full.py \
-    --model Qwen/Qwen3-14B --task LaMP-7
+Both extraction scripts are resumable: they read the existing `.npz`, extract
+only the users past its current length, and write the merged array back.
 
-# 4. Ablations (n=200 each, share extracted vectors when possible)
-python experiments/n_questions/run_n_questions.py \
-    --model Qwen/Qwen3-8B --task LaMP-2 \
-    --n_questions_grid 1 3 5 10 20
-
-python experiments/alpha_sweep/run_alpha_sweep.py \
-    --model Qwen/Qwen3-8B --task LaMP-2 \
-    --alphas 0 0.5 1 2 4 8 16
-
-# 5. Generate figures and LaTeX tables for the paper
+```bash
+python experiments/icl_baseline/run_icl.py --task LaMP-2 --K_grid 3 5 6
+python experiments/operators/run_operators.py --task LaMP-7 --operator proj_nuisance --pca_k 5
+python experiments/operators/run_routing.py --task LaMP-7
+python experiments/operators/run_rank1_edit.py --task LaMP-7
+python experiments/variance_analysis/analyze_variance.py --task LaMP-7 --n_users 1497
+python experiments/case_study/per_user_alpha_search.py --task LaMP-2 --variant fact
+python experiments/significance_tests.py
 python scripts/generate_paper_figures.py
 ```
+
+## Results in detail
+
+### Extraction layer
+
+Sweeping the middle 60% of the stack at stride 2 on LaMP-2 (n=50, α=1):
+
+| Model | Best layer | Depth | Acc at best | Zero-shot |
+|---|---|---|---|---|
+| Qwen3-8B | 13 | 36% | 0.740 | 0.740 |
+| Qwen3-14B | 10 | 25% | 0.760 | 0.760 |
+
+No layer beat zero-shot in either model. What the sweep did settle is that the
+hand-picked defaults carried over from the smoke runs — layer 18 for the 8B,
+layer 20 for the 14B, both around half depth — sit in a mild degradation zone,
+while layers at 25–40% depth at least leave the zero-shot accuracy intact. Layer
+13 is used for everything afterwards.
+
+<details>
+<summary>Per-layer accuracy</summary>
+
+Qwen3-8B (zero-shot 0.740 / f1w 0.765):
+
+| layer | 7 | 9 | 11 | **13** | 15 | 17 | 19 | 21 | 23 | 25 | 27 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| depth | 19% | 25% | 31% | **36%** | 42% | 47% | 53% | 58% | 64% | 69% | 75% |
+| acc | 0.700 | 0.720 | 0.700 | **0.740** | 0.740 | 0.700 | 0.660 | 0.680 | 0.660 | 0.680 | 0.680 |
+| f1w | 0.728 | 0.749 | 0.730 | **0.762** | 0.767 | 0.749 | 0.719 | 0.711 | 0.709 | 0.719 | 0.719 |
+
+Qwen3-14B (zero-shot 0.760 / f1w 0.797):
+
+| layer | 8 | **10** | 12 | 14 | 16 | 18 | 20 | 22 | 24 | 26 | 28 | 30 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| depth | 20% | **25%** | 30% | 35% | 40% | 45% | 50% | 55% | 60% | 65% | 70% | 75% |
+| acc | 0.740 | **0.760** | 0.760 | 0.760 | 0.760 | 0.740 | 0.740 | 0.760 | 0.720 | 0.760 | 0.760 | 0.740 |
+| f1w | 0.758 | **0.783** | 0.783 | 0.783 | 0.775 | 0.740 | 0.762 | 0.780 | 0.734 | 0.783 | 0.783 | 0.755 |
+
+</details>
+
+### Steering strength
+
+Qwen3-8B, LaMP-2, layer 13, n=200:
+
+| α | 0.0 | 0.5 | 1.0 | 2.0 | 4.0 | 8.0 | 16.0 |
+|---|---|---|---|---|---|---|---|
+| acc | 0.760 | 0.770 | **0.780** | 0.745 | 0.545 | 0.160 | 0.000 |
+| f1w | 0.781 | 0.790 | **0.798** | 0.774 | 0.652 | 0.194 | 0.000 |
+
+The response curve is the shape the persona-vector paper predicts: a shallow
+optimum around α=1 and a collapse of base capability past α=4. The +0.02 at the
+peak did not survive a larger sample — at n=500 both backbones came out at
+−0.012 against zero-shot — so it is sample variance rather than a real effect,
+but the collapse at high α confirms the hook is doing what it should.
+
+Varying the number of extraction questions did nothing (n=50, layer 13, α=1):
+k=1 gives 0.740, k=3, 5 and 10 all give 0.700, and k=3 and k=5 produce
+bit-identical predictions on every example. More questions do not average the
+noise out of the vector because extraction noise is not what limits it.
+
+### Vector geometry
+
+At layer 13, n=30 deduplicated users per task — the sample the committed
+`comparison_*.json` files were written from, before the extraction scripts
+extended the saved vectors to 323 (LaMP-2) and 1497 (LaMP-7):
+
+| Task | Artifacts | mean cos | rank@90% | var in 2 PCs |
+|---|---|---|---|---|
+| LaMP-2 | template | 0.329 | 9 | 37.4% |
+| LaMP-2 | fact | 0.335 | 7 | 59.6% |
+| LaMP-7 | template | 0.413 | 18 | 28.8% |
+| LaMP-7 | fact | 0.252 | 19 | 26.7% |
+
+The two artifact constructions are geometrically equivalent on LaMP-2 and
+clearly different on LaMP-7, where facts separate users much better. Neither
+difference reaches the generations.
+
+The earlier geometry runs in `results/geometry/` predate the deduplication fix
+and report mean cosines of 0.749 (Qwen3-8B, layer 13) and 0.921 (Qwen3-14B,
+layer 10) on n=100 *samples*. Those numbers measure how often the same profile
+recurs in the dev split, not how similar users are, and
+`analyze_geometry.py` still runs without `unique_users` — as do the layer
+search, α-sweep, n_questions and full-run scripts. Read anything from those five
+as a sample-level rather than user-level measurement.
+
+### Alternative operators
+
+Three ways of changing what gets injected, all at layer 13 on the full
+unique-user samples, all reported as the best α in the sweep against zero-shot:
+
+| Operator | LaMP-2 (acc) | LaMP-7 (ROUGE-L) |
+|---|---|---|
+| Project out top-k PCA directions | +0.003 (template, k=5) | +0.001 (template, k=5) |
+| Rank-1 `down_proj` edit | 0.000 | +0.002 (template) |
+| Cosine-gated token routing | +0.006 (fact) | +0.005 (fact, n=200) |
+
+Removing the population-shared directions, editing the weights instead of the
+activations, and steering only the token positions that already point along the
+persona direction all land within a few thousandths of the control. The
+per-user analysis in `experiments/variance_analysis/` says why the aggregate
+sits where it does: on LaMP-7 with template artifacts, 177 users improve and 167
+get worse, and none of the three static predictors of steering quality
+(alignment with the population mean, relative magnitude, neighbourhood coherence)
+correlates with the outcome above |r| = 0.03.
+
+### One user where it works
+
+LaMP-2 user 3, layer 13, fact artifacts, ‖v‖ = 27.6. The profile is six
+`MOVIE: "<headline>"` items dominated by women's voices and humour from female
+social-media accounts, body positivity and gender issues. The test item is a
+politically framed article; the gold label is `politics`.
+
+| α | 0.00 | 0.25 | 0.50 | 0.75 | 1.00 | 1.25 | 1.50 | 2.00 |
+|---|---|---|---|---|---|---|---|---|
+| top token | `education` 1.00 | `education` 1.00 | `education` 0.699 / `pol` 0.301 | `pol` 1.00 | `pol` 1.00 | `pol` 1.00 | `pol` 1.00 | `pol` 1.00 |
+| prediction | education | education | education | politics | politics | politics | politics | politics |
+
+The transition happens between α=0.50 and α=0.75 and it is sharp — the user's
+direction rotates the last-token logits far enough to override the model's
+content prior in one step of the grid. Figure:
+`figures/fig_case_LaMP-2_user003_fact.pdf`.
+
+### Smoke reference
+
+The n=200 runs in `results/main_table/` compare a frozen LLM against
+BehavioralTwin, the trained Flan-T5-XXL plus Q-Former pipeline this work started
+from:
+
+| Task | BehavioralTwin | Best zero-shot LLM | Best persona LLM |
+|---|---|---|---|
+| LaMP-1 (acc) | **0.567** | 0.435 (Qwen3-14B) | 0.465 (Mistral) |
+| LaMP-2 (acc) | 0.703 | 0.790 (Qwen3-14B) | **0.805** (Qwen3-14B) |
+| LaMP-3 (MAE) | **0.251** | 0.630 (Qwen3-14B) | — |
+| LaMP-4 (R-L) | **0.179** | 0.137 (Qwen3-14B) | — |
+| LaMP-5 (R-L) | **0.437** | 0.360 (Qwen3-14B) | — |
+| LaMP-7 (R-L) | 0.403 | 0.413 (Qwen3-14B) | **0.426** (Qwen3-8B) |
+
+Swapping the backbone for a frozen Qwen3-14B and prompting it zero-shot beats
+the trained pipeline on LaMP-2 and LaMP-7 without training anything. It loses
+badly on the regression and long-generation tasks.
 
 ## Repository layout
 
 ```
-persona-vectors-icml2026/
-├── src/                          core library (single import point)
-│   ├── persona_vectors.py        PersonaVectors, PersonaSteering, PersonaMonitor
-│   ├── inference.py              load_model_and_tokenizer, persona_steered_generate
-│   ├── dataset.py                LaMPDataset, task registry, prompt templates
-│   └── metrics.py                accuracy / regression / ROUGE
-├── experiments/
-│   ├── layer_search/             sweeps middle 60% of layers; saves best per model
-│   ├── geometry_analysis/        cosine sim + magnitude ratio + PCA(2)
-│   ├── full_run/                 1500-example evaluation, ZS + persona@optimal
-│   ├── n_questions/              ablation: 1, 3, 5, 10, 20 extraction questions
-│   └── alpha_sweep/              ablation: α ∈ {0, 0.5, 1, 2, 4, 8, 16}
-├── results/                      JSON outputs (one file per experiment)
-│   ├── layer_search/
-│   ├── geometry/
-│   ├── full_run/
-│   ├── n_questions/
-│   ├── alpha_sweep/
-│   └── main_table/               smoke n=200 results from prior runs (input data)
-├── figures/                      PDF figures generated by scripts/generate_paper_figures.py
-├── paper/
-│   └── tables/                   auto-generated LaTeX tables (\input from main .tex)
-└── scripts/
-    ├── env.sh                    shell env (HF cache, venv, token)
-    └── generate_paper_figures.py builds all figures + tables from JSONs
+src/
+  persona_vectors.py   PersonaVectors, PersonaSteering, PersonaMonitor
+  fact_extractor.py    fact-based artifact construction
+  dataset.py           LaMPDataset, task registry, prompt templates
+  inference.py         model loading, persona-steered generation
+  metrics.py           accuracy / regression / ROUGE
+  runs.py              locating earlier runs (best_layer)
+experiments/
+  layer_search/        sweep the middle 60% of the stack
+  geometry_analysis/   cosine, magnitude ratio, PCA
+  alpha_sweep/         steering-strength response curve
+  n_questions/         extraction questions ablation
+  full_run/            full-split evaluation, ZS + steering
+  positive_control/    template vs fact artifacts, saves the shared .npz
+  icl_baseline/        profile as context instead of as a vector
+  operators/           PCA projection, rank-1 weight edit, token routing
+  variance_analysis/   which users steering helps, and whether that is predictable
+  case_study/          single-user trace and per-user α search
+  significance_tests.py
+results/               one JSON per run, predictions included
+figures/               PDFs built by scripts/generate_paper_figures.py
+scripts/               environment, vector extraction, figure and paper builds
 ```
 
-## Reproducibility invariants
+## Reproducibility notes
 
-* `seed=42` everywhere
-* All Qwen3 / Qwen3.5 runs include `/no_think` in the system prompt and pass
-  `enable_thinking=False` to the chat template
-* Persona vectors and steering operate on the **same layer** (no layer-mixing)
-* All raw predictions and refs are saved alongside metrics in JSON
-* Geometry analysis is run at the layer that scored best in layer search
+Seed 42 throughout. Qwen3 runs pass `enable_thinking=False` to the chat template
+and put `/no_think` in the system prompt, so nothing is scored against a
+truncated chain of thought. Extraction and steering always use the same layer.
+Raw predictions and references are written next to the metrics in every result
+file, which is what lets `significance_tests.py` pair examples after the fact.
 
-## Live experimental results (this session)
-
-> All runs auto-update this section; see `results/<exp>/*.json` for raw data.
-
-### Session summary (TL;DR)
-
-**The paper claim, in one sentence:** at the optimal extraction layer, per-user
-persona vectors as constructed by the paper-faithful algorithm collapse onto a
-shared low-rank subspace (rank-2 captures 92.7% of variance for Qwen3-8B; 99%
-of Qwen3-14B user-pair cosines exceed 0.8) — the vectors **encode the
-prompt-template direction**, not user identity, which mechanistically explains
-why steering produces no significant effect over zero-shot at n=500
-($\Delta \in [-0.012, -0.012]$ for both backbones).
-
-| Phase | Outcome | Implication |
-|---|---|---|
-| 1. Layer search (n=50) | best layer 13 (8B) / 10 (14B) — both ~30% depth, both = ZS | optimal layer is *earlier* than the typical hand-picked middle |
-| 2. Geometry (n=100) | 8B: 92.7% var in 2 PCs; 14B: 99% pairs cos > 0.8 | vectors are not user-specific |
-| 3a. α-sweep (n=200) | peak at α=1 (+0.02), collapse at α≥4 | steering does shift the residual stream — but uniformly |
-| 3b. n_questions (n=50) | k=1 best; k=3,5,10 give bitwise-identical predictions | extraction-noise reduction does not help — bottleneck is artifact construction |
-| 4. Full eval (n=500) | persona = ZS − 0.012 on both backbones | the +0.02 at n=200 was sample variance |
-
-### Phase 1 — Layer search on LaMP-2 (n=50, α=1.0, stride 2)
-
-| Model | Status | Best layer | Acc @ best | ZS baseline | Δ |
-|---|---|---|---|---|---|
-| Qwen3-8B  | done | **13** (36%) | 0.740 | 0.740 | 0.000 |
-| Qwen3-14B | done | **10** (25%) | 0.760 | 0.760 | 0.000 |
-
-> **Per-layer table for Qwen3-8B / LaMP-2 (n=50):**
->
-> | layer | depth | acc | f1w |
-> |---|---|---|---|
-> | ZS | — | 0.740 | 0.765 |
-> | 7  | 19% | 0.700 | 0.728 |
-> | 9  | 25% | 0.720 | 0.749 |
-> | 11 | 31% | 0.700 | 0.730 |
-> | **13** | **36%** | **0.740** | **0.762** |
-> | 15 | 42% | 0.740 | 0.767 |
-> | 17 | 47% | 0.700 | 0.749 |
-> | 19 | 53% | 0.660 | 0.719 |
-> | 21 | 58% | 0.680 | 0.711 |
-> | 23 | 64% | 0.660 | 0.709 |
-> | 25 | 69% | 0.680 | 0.719 |
-> | 27 | 75% | 0.680 | 0.719 |
->
-> **Per-layer table for Qwen3-14B / LaMP-2 (n=50):**
->
-> | layer | depth | acc | f1w |
-> |---|---|---|---|
-> | ZS | — | 0.760 | 0.797 |
-> | 8  | 20% | 0.740 | 0.758 |
-> | **10** | **25%** | **0.760** | **0.783** |
-> | 12 | 30% | 0.760 | 0.783 |
-> | 14 | 35% | 0.760 | 0.783 |
-> | 16 | 40% | 0.760 | 0.775 |
-> | 18 | 45% | 0.740 | 0.740 |
-> | 20 | 50% | 0.740 | 0.762 |
-> | 22 | 55% | 0.760 | 0.780 |
-> | 24 | 60% | 0.720 | 0.734 |
-> | 26 | 65% | 0.760 | 0.783 |
-> | 28 | 70% | 0.760 | 0.783 |
-> | 30 | 75% | 0.740 | 0.755 |
->
-> **Finding (combined across both models):** persona steering at α=1.0 does **not exceed zero-shot at any layer** in either backbone. The earlier hand-picked defaults (layer 18 for 8B, layer 20 for 14B — both ≈50% depth) sit in mild *degradation zones* relative to early-middle layers (~25–40% depth) which preserve zero-shot accuracy. This is the cleanest empirical result so far: **on LaMP-2, paper-faithful persona vectors with template-based artifacts do not steer the LLM toward better personalization decisions.** Combined with the geometry analysis (Phase 2) showing low magnitude ratio, the explanation is that the persona vector signal is too weak to outweigh the model's content-based prior.
-
-### Phase 2 — Geometry analysis (n=100 at best layer)
-
-| Model | layer | $\overline{\cos}_{\text{off-diag}}$ | median cos | $\overline{\|v\|/\|h\|}$ | PCA 2-PC var | Pairs cos > 0.8 |
-|---|---|---|---|---|---|---|
-| Qwen3-8B  | 13 | 0.749 | 0.823 | 0.183 | 92.7% | 59% |
-| Qwen3-14B | 10 | **0.921** | 0.913 | 0.063 | 58.0% | **99%** |
-
-> ### ⚡ Key mech-interp finding
->
-> For Qwen3-8B at layer 13 the 100 extracted "per-user" persona vectors are
-> **NOT user-specific** — they cluster strongly:
-> * mean off-diagonal cosine = **0.75** (vectors are 3/4 of the way to identical)
-> * **92.7% of variance is captured in only 2 principal components**
-> * 59% of all user-pair cosines exceed 0.8
->
-> What we extract is **mostly the prompt-template direction** ("act as the
-> author of this profile") shared across all users, not individual identity.
-> The user-content variation contributes ≤10% of the signal. This is the
-> mechanistic explanation for the small steering effect we observe (+0.02
-> acc at α=1.0, max 0.78 at peak): one shared direction moves all samples
-> the same way; there is no per-user differentiation to give true personalization.
->
-> **Magnitude is not the bottleneck** (|v|/|h| ≈ 18%, plenty for steering).
-> **Identity-resolution is the bottleneck.**
->
-> **Replicates on Qwen3-14B (layer 10) — even more extreme:**
-> * mean off-diagonal cosine = **0.921** (vectors are 92% identical on average)
-> * **99% of all user-pair cosines exceed 0.8**
-> * |v|/|h| = 6.3% (smaller than 8B but still non-zero)
->
-> The earlier layer (25% vs 36%) appears to be even less personalized —
-> consistent with the standard interpretation that very early layers encode
-> token-level features, not semantic / identity-bearing ones. **Both models
-> support the same conclusion**: paper-faithful per-user persona vector
-> construction (template-based positive prompts + generic negatives) does
-> not yield genuinely per-user activation directions on LaMP.
-
-### Phase 3 — α-sweep (Qwen3-8B / LaMP-2 / n=200, layer 13)
-
-| α | Accuracy | F1w |
-|---|---|---|
-| 0.0 (ZS)  | 0.760 | 0.781 |
-| 0.5       | 0.770 | 0.790 |
-| **1.0**   | **0.780** | **0.798** |
-| 2.0       | 0.745 | 0.774 |
-| 4.0       | 0.545 | 0.652 |
-| 8.0       | 0.160 | 0.194 |
-| 16.0      | 0.000 | 0.000 |
-
-**Finding:** clean steering response curve (paper §6 prediction confirmed).
-α=1.0 yields the only positive Δ over zero-shot (+0.020 acc, +0.017 f1w).
-α≥4 collapses base task capability — this is the canonical "too-strong steering"
-mode. Combined with the layer search, this validates that **persona steering
-*does* steer the model, just weakly**: the optimum is α=1, layer 13 (early-middle),
-with a +2 pp effect — just visible above the n=200 noise floor.
-
-### Phase 3 — n_questions ablation (Qwen3-8B / LaMP-2 / n=50, layer 13, α=1.0)
-
-| n_questions | Accuracy | F1w |
-|---|---|---|
-| 1   | **0.740** | **0.762** |
-| 3   | 0.700 | 0.728 |
-| 5   | 0.700 | 0.728 |
-| 10  | 0.700 | 0.724 |
-
-**Finding:** plateau at k≥3 — and k=3, k=5 give *bitwise-identical* per-example
-predictions, meaning increasing extraction noise reduction does **not** change
-the vector's effect. This is consistent with the rank-2 collapse from §Phase 2:
-once the artifact-template direction is captured (k=1), additional questions
-add no new information, only confirm the same direction.
-
-### Phase 4 — Extended evaluation on LaMP-2 (n=500, α=1.0)
-
-| Model | ZS | Persona @ optimal layer | Δ |
-|---|---|---|---|
-| Qwen3-8B (layer 13)  | 0.672 | 0.660 | **−0.012** |
-| Qwen3-14B (layer 10) | 0.678 | 0.666 | **−0.012** |
-
-**Finding:** at n=500 (where smoke n=200's ±0.035 noise floor drops to ±0.022),
-persona steering produces a small **negative** effect on both backbones (−0.012),
-which is *within noise but consistent in sign*. The +0.02 advantage seen in the
-n=200 alpha-sweep (Phase 3) does **not replicate** at n=500. Combined with the
-geometry results, the conclusion is:
-> **Per-user persona vectors as constructed do not deliver actual personalization
-> on LaMP-2.** The rank-2 collapse (Phase 2) and identical-prediction plateau
-> (Phase 3 n_questions) provide the mechanistic explanation: the vectors are
-> dominated by a shared template direction, so steering shifts all examples
-> in the same way without per-user differentiation.
-
-### Phase 6 — Positive control: template vs fact-based artifacts (n=30 unique users, LaMP-2, Qwen3-8B layer 13)
-
-**Setup.** Same Qwen3-8B used for fact extraction (5 distinguishing facts per user, generated locally — no external API). Critical: this run uses **`unique_users=True`** dedup (LaMP-2 has only 323 unique profiles in 1605 samples ⇒ ~5 test items per user; prior phases conflated within-user duplicates).
-
-| | mean cos | rank@90% | var(2 PC) | frac > 0.8 | verdict |
-|---|---|---|---|---|---|
-| Template-based | 0.329 | 9 | 37.4% | 3% | **USER-SPECIFIC ✓** |
-| Fact-based | 0.335 | 7 | 59.6% | 2% | **USER-SPECIFIC ✓** |
-| ⚠️ prior n=100 (with duplicates) | 0.749 | — | 92.7% | 59% | "rank-2 collapse" |
-
-**Major correction to Phase 2 finding.** The earlier rank-2 collapse was **mostly an artifact of within-user duplicates** in the LaMP-2 dev split. After dedup (each profile counted once), per-user persona vectors **are distinguishable** (cos ≈ 0.33, rank@90% ≈ 9). The template-confound hypothesis is **rejected**: fact-based artifacts produce essentially the same geometry (cos Δ = +0.006, rank Δ = −2).
-
-**Downstream (n=30 unique users):**
-
-| Method | Acc | Δ vs ZS |
-|---|---|---|
-| Zero-shot          | 0.567 | — |
-| Template α=1       | 0.533 | −0.033 |
-| **Fact-based α=1** | **0.433** | **−0.133** |
-
-Steering hurts in both cases; fact-based hurts **more**. Fact prompts are 5–10× longer with concrete user content — they steer the residual stream too strongly toward user-specific topical priors, drowning the model's task-classification signal.
-
-**Refined hypothesis.** The bottleneck is **not** identity-resolution at extraction time (geometry shows distinct vectors). It is the **steering operator itself**: at one layer, with α=1, additive injection of a (rich, user-specific) direction overrides the model's content-aware decoding. This is consistent with the α-sweep finding: the "useful" steering window is narrow (peak at α=1, collapse at α≥4), and fact-based vectors — with their richer content — push past the useful window even at α=1.
-
-#### Cross-task validation: LaMP-7 (paraphrase, 1497/1498 unique users — no dedup needed)
-
-| | mean cos | rank@90% | var(2 PC) | verdict |
-|---|---|---|---|---|
-| Template-based | 0.413 | 18 | 28.8% | partial |
-| **Fact-based** | **0.252** | 19 | 26.7% | **USER-SPECIFIC ✓** |
-
-**On LaMP-7, fact-based artifacts produce a substantially more user-specific
-geometry than templates (Δ cos = −0.16).** This is a different regime from
-LaMP-2 (where the two were geometrically equivalent at cos ≈ 0.33), and shows
-that the relative quality of artifact construction is task-dependent.
-
-| Method | ROUGE-1 | ROUGE-L | Δ R-L |
-|---|---|---|---|
-| Zero-shot      | 0.481 | 0.430 | — |
-| Template α=1   | 0.476 | 0.430 | 0.000 |
-| Fact-based α=1 | 0.479 | 0.425 | −0.005 |
-
-**Yet downstream is unchanged.** All three are within ~0.005 ROUGE-L —
-identical for the workshop-paper noise floor. **Even when fact-based
-extraction yields visibly better-separated vectors, single-layer additive
-steering cannot translate that geometric advantage into generation gains.**
-This is the strongest evidence for the refined hypothesis: the bottleneck is
-the steering operator. The full chain works as-evidenced for *some* users
-(see Phase 7 case study) but fails *on average* across users.
-
-### Phase 7 — Case study: a single user where steering works
-
-> A clean demonstration that *some* per-user vectors do contain
-> personalization information that steering can deliver, even though average
-> accuracy gains do not survive at scale.
-
-**User 3** (LaMP-2, layer 13, fact-based artifacts):
-
-- **Profile** (6 items, all `MOVIE: "<headline>"`): predominantly women's voices,
-  humor from female social-media accounts (3× "The 20 Funniest Tweets From
-  Women This Week"), body-positivity, gender issues in Hollywood.
-- **Test input:** "Which category does this article relate to?" with a politically
-  framed article.
-- **Gold:** `politics`
-- **Extracted facts** (from local Qwen3-8B, no API): "humor and female
-  voices on social media", "body positivity and mental health", "gender and
-  societal issues", ...
-
-**Steering trajectory at layer 13** ($|v|=27.6$):
-
-| α | top-2 tokens (P) | greedy pred | matches gold |
-|---|---|---|---|
-| 0.00 | `'education'` 1.000 | education | ❌ |
-| 0.25 | `'education'` 1.000 | education | ❌ |
-| **0.50** | `'education'` **0.699**, `'pol'` **0.301** | education | ❌ |
-| **0.75** | `'pol'` 1.000 | **politics** | ✅ |
-| 1.00 | `'pol'` 1.000 | politics | ✅ |
-| 1.25 | `'pol'` 1.000 | politics | ✅ |
-| 1.50 | `'pol'` 1.000 | politics | ✅ |
-| 2.00 | `'pol'` 1.000 | politics | ✅ |
-
-**The phase transition is sharp.** Between α=0.50 and α=0.75 the persona
-vector flips the argmax token from `education` to `politics`. The user's
-profile direction (women / social / political topics) literally rotates the
-last-token logits enough to override the model's content-based prior.
-
-This is a textbook positive instance of the per-user steering hypothesis.
-The aggregate Phase 4 negative result (Δ ≈ −0.01 on n=500) is a *population*
-average; individual users *are* steerable.
-
-Figure: `figures/fig_case_LaMP-2_user003_fact.pdf` (3 panels: stacked-bar
-top-token probs, gold-prob vs α, prediction match per α).
-
-### Smoke n=200 reference (from prior session, see `results/main_table/`)
-
-Best persona-LLM vs trained BehavioralTwin/Flan-T5-XXL:
-
-| Task | Trained BT | Best ZS-LLM | Best persona-LLM | Δ vs BT |
-|---|---|---|---|---|
-| LaMP-1 | **0.567** | 0.435 (Qwen3-14B) | 0.465 (Mistral) | −0.10 |
-| LaMP-2 | 0.703 | 0.790 (Qwen3-14B) | **0.805** (Qwen3-14B persona) | +0.10 |
-| LaMP-3 | **0.251 MAE** | 0.630 (Qwen3-14B) | — | +0.38 (worse) |
-| LaMP-4 | **0.179 R-L** | 0.137 (Qwen3-14B) | — | −0.04 |
-| LaMP-5 | **0.437 R-L** | 0.360 (Qwen3-14B) | — | −0.08 |
-| LaMP-7 | 0.403 R-L | 0.413 (Qwen3-14B) | **0.426 R-L** (Qwen3-8B persona) | +0.02 |
+The deduplication distinction matters when comparing numbers across
+experiments: `unique_users=True` in the positive control, ICL, operator,
+variance and case-study runs; not set in the layer search, geometry, α-sweep,
+n_questions and full runs.
 
 ## Citation
 
@@ -384,5 +299,5 @@ Best persona-LLM vs trained BehavioralTwin/Flan-T5-XXL:
 
 ## Acknowledgements
 
-Builds on the persona-vector algorithm from Rimsky et al. (Anthropic, 2025).
-LaMP benchmark from Salemi et al. (2024).
+The persona-vector algorithm is from Rimsky et al. (Anthropic, 2025). The LaMP
+benchmark is from Salemi et al. (2024).
