@@ -1,14 +1,14 @@
-"""Zero-shot control at the sample sizes the ICL and steering runs use.
-
-The earlier zero-shot numbers came from the n=30 deduplicated subset, which is
-not comparable with n=100 (LaMP-2) or n=200 (LaMP-7). This re-runs it on the
-same slice those experiments evaluate.
+"""Zero-shot baseline (no profile, no steering) for the same sample sizes
+used in the ICL and steering experiments.  Needed for an apples-to-apples
+comparison at n=100 (LaMP-2) and n=200 (LaMP-7), since the prior ZS numbers
+were on the n=30 dedup'd subset.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -28,6 +28,9 @@ from src import (
 
 
 def main():
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
     ap.add_argument("--task", default="LaMP-2")
@@ -36,9 +39,7 @@ def main():
     ap.add_argument("--output_dir", default="results/icl_baseline_extended")
     args = ap.parse_args()
 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-
+    torch.manual_seed(args.seed); np.random.seed(args.seed)
     info = task_info(args.task)
     metric = info["metric"]
     chat_kwargs = chat_kwargs_for(args.model)
@@ -59,8 +60,7 @@ def main():
             max_new_tokens=info["max_new_tokens"],
             chat_kwargs=chat_kwargs, system_prompt=system_prompt,
         )
-        preds.append(pred)
-        refs.append(s["output_text"].strip())
+        preds.append(pred); refs.append(s["output_text"].strip())
         if (i + 1) % 25 == 0:
             print(f"  {i+1}/{len(samples)} ({time.time()-t0:.0f}s)")
     m = compute_metric(metric, preds, refs)

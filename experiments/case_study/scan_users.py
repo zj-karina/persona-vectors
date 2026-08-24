@@ -1,19 +1,21 @@
-"""Find a user worth writing up as the case study.
+"""Scan multiple users to pick the most demonstrative case-study target.
 
-Scores each user by how many distinct greedy predictions steering produces
-across the α grid: a user whose answer never changes says nothing, one whose
-answer moves is where the mechanism is visible.
+We're looking for users where:
+  - α=0 prediction differs from α=1 (or 2) prediction, OR
+  - gold-token probability shifts significantly across α.
 
-Reuses the fact cache from the positive-control run, so a scan costs roughly
-one second per α per user.
+Reuses the fact_cache from the positive-control run on LaMP-2 to skip
+fact extraction. Per-user cost: ~1 sec × 5 alphas = ~5 sec.
+
+Output: results/case_study/scan_<task>.json with one row per user_idx.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
-from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -31,17 +33,18 @@ from src import (
 @torch.no_grad()
 def topk_at_first(model, tokenizer, prompt, k=5, vector=None, layer_idx=None, alpha=0.0):
     enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024
-                    ).to(next(model.parameters()).device)
+                   ).to(next(model.parameters()).device)
     if vector is not None and abs(alpha) > 0:
         ctx = PersonaSteering(model, layer_idx).hook(vector, alpha=alpha)
     else:
+        from contextlib import nullcontext
         ctx = nullcontext()
     with ctx:
         out = model(**enc)
         probs = torch.nn.functional.softmax(out.logits[0, -1].float(), dim=-1)
         topk_p, topk_i = torch.topk(probs, k)
         gen = model.generate(**enc, max_new_tokens=4, do_sample=False,
-                             pad_token_id=tokenizer.pad_token_id)
+                            pad_token_id=tokenizer.pad_token_id)
         new_tokens = gen[0, enc["input_ids"].shape[1]:]
         pred = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
     return [(tokenizer.decode([int(i)]).strip(), float(p))
@@ -66,9 +69,8 @@ def main():
                           data_dir=str(ROOT / "data"), unique_users=True)
     samples = list(dataset)
 
-    cache: dict[str, dict] = {}
-    extractor = None
     if args.variant == "fact":
+        # reuse fact cache from positive_control
         cache_path = ROOT / "results" / "positive_control" / f"cache_facts_{args.task}.json"
         if cache_path.exists():
             with open(cache_path) as f:
@@ -77,12 +79,16 @@ def main():
         else:
             print(f"WARNING: {cache_path} missing — falling back to template variant")
             args.variant = "template"
+            cache = {}
+    else:
+        cache = {}
 
     pv = PersonaVectors(model=model, tokenizer=tokenizer, layer_idx=args.layer_idx,
                         max_new_tokens=50, chat_template_kwargs=chat_kwargs)
 
     rows = []
     for i, s in enumerate(samples):
+        # Build positive/negative prompts
         if args.variant == "fact":
             user_id = str(s.get("id") or i)
             if user_id not in cache:
@@ -94,8 +100,10 @@ def main():
             positive = s["positive_system_prompts"]
             negative = s["negative_system_prompts"]
 
-        prompt = build_chat_prompt(tokenizer, s["input_text"], system_prompt, chat_kwargs)
+        prompt = build_chat_prompt(tokenizer, s["input_text"], system_prompt,
+                                   chat_kwargs)
 
+        # Extract vector
         try:
             v = pv.extract(positive, negative, [s["input_text"]]).to(model.device)
         except RuntimeError:
@@ -104,28 +112,33 @@ def main():
 
         gold = s["output_text"].strip().lower()
         per_alpha = {}
+        preds_seen = set()
         for alpha in args.alphas:
             topk, pred = topk_at_first(model, tokenizer, prompt, k=5,
-                                       vector=v if alpha != 0 else None,
-                                       layer_idx=args.layer_idx, alpha=alpha)
+                                        vector=v if alpha != 0 else None,
+                                        layer_idx=args.layer_idx, alpha=alpha)
             per_alpha[alpha] = {"pred": pred, "topk": topk,
                                 "match": pred.lower() == gold}
+            preds_seen.add(pred.lower())
 
-        preds = [p["pred"] for p in per_alpha.values()]
+        # "interestingness": more distinct predictions across α = better case study
+        interestingness = len(preds_seen)
         rows.append({
             "user_idx": i, "gold": gold,
             "input": s["input_text"][:120],
-            "n_distinct_preds": len({p.lower() for p in preds}),
+            "n_distinct_preds": interestingness,
             "preds": {a: p["pred"] for a, p in per_alpha.items()},
             "matches": {a: p["match"] for a, p in per_alpha.items()},
             "P(gold) by α": {
-                a: next((p for t, p in d["topk"] if t.lower() == gold), 0.0)
-                for a, d in per_alpha.items()
+                a: next((p for t, p in v["topk"] if t.lower() == gold), 0.0)
+                for a, v in per_alpha.items()
             },
         })
-        print(f"  user {i:>3} gold={gold!r:>20} preds={' -> '.join(repr(p) for p in preds)}  "
-              f"distinct={rows[-1]['n_distinct_preds']}")
+        print(f"  user {i:>3} gold={gold!r:>20} preds={list(per_alpha.values())[0]['pred']!r}->"
+              f"{list(per_alpha.values())[1]['pred']!r}->{list(per_alpha.values())[-1]['pred']!r}  "
+              f"distinct={interestingness}")
 
+    # Pick top users by interestingness
     rows.sort(key=lambda r: (-r["n_distinct_preds"], r["user_idx"]))
     print("\n=== Top candidates for case study ===")
     for r in rows[:5]:
@@ -142,4 +155,5 @@ def main():
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     main()

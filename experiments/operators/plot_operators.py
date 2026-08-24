@@ -1,13 +1,17 @@
-"""All operator variants against the additive baseline, one panel per task/variant.
+"""Combined comparison plot of all operator variants on LaMP-2 and LaMP-7.
 
-Reads whatever run_operators.py, run_rank1_edit.py and run_routing.py have
-written for each panel and skips the runs that are missing.
+Reads:
+  results/operators/{LaMP-X}_Qwen3-8B_template_proj_nuisance_k{1,5,10}_n*.json
+  results/operators/routing_LaMP-X_Qwen3-8B_template_n*.json
+  results/operators/rank1_edit_LaMP-X_Qwen3-8B_template_n*.json
+plus the additive-baseline numbers from prior variance runs.
+
+Output: figures/fig_operators_comparison.pdf
 """
 
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import matplotlib
@@ -15,25 +19,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
-
-from src import FIGURES, primary_label, primary_value
-
-OPERATORS_DIR = ROOT / "results/operators"
-PROJ_COLORS = {1: "#ffa07a", 5: "#e74c3c", 10: "#7b241c"}
-
-# Zero-shot references and the α=1 additive baseline come from the variance runs
-# on the same unique-user samples; those runs write per-user rows, not a curve.
-PANELS = [
-    {"task": "LaMP-2", "variant": "template", "n_users": 323, "zs": 0.582,
-     "additive": {0.0: 0.582, 1.0: 0.557}, "routing_tau": 0.0},
-    {"task": "LaMP-2", "variant": "fact", "n_users": 323, "zs": 0.582,
-     "additive": None, "routing_tau": 0.25},
-    {"task": "LaMP-7", "variant": "template", "n_users": 1497, "zs": 0.4262,
-     "additive": None, "routing_tau": None},
-    {"task": "LaMP-7", "variant": "fact", "n_users": 1497, "zs": 0.4262,
-     "additive": None, "routing_tau": None},
-]
 
 
 def load_json(p: Path) -> dict | None:
@@ -43,81 +28,212 @@ def load_json(p: Path) -> dict | None:
         return json.load(f)
 
 
-def curve(results: list[dict], metric: str) -> dict[float, float]:
-    return {r["alpha"]: primary_value(metric, r["value"]) for r in results}
+def primary(metric: str, value: dict) -> float:
+    if metric == "accuracy":
+        return value["accuracy"]
+    if metric == "rouge":
+        return value["ROUGE-L"]
+    if metric == "regression":
+        return value["mae"]
+    return float("nan")
 
 
-def collect_proj(task: str, variant: str, n_users: int) -> dict[int, dict[float, float]]:
+def collect_proj(task: str, n_users: int) -> dict[int, dict[float, float]]:
+    """Return {k: {alpha: metric}}. Each row keyed by pca_k."""
     out = {}
-    for k in PROJ_COLORS:
-        d = load_json(OPERATORS_DIR /
-                      f"{task}_Qwen3-8B_{variant}_proj_nuisance_k{k}_n{n_users}.json")
-        if d:
-            out[k] = curve(d["results"], d["results"][0]["metric"])
+    for k in [1, 5, 10]:
+        p = ROOT / "results/operators" / \
+            f"{task}_Qwen3-8B_template_proj_nuisance_k{k}_n{n_users}.json"
+        d = load_json(p)
+        if not d:
+            continue
+        metric = d["results"][0]["metric"]
+        out[k] = {r["alpha"]: primary(metric, r["value"]) for r in d["results"]}
     return out
 
 
-def collect_rank1(task: str, variant: str, n_users: int) -> dict[float, float]:
-    d = load_json(OPERATORS_DIR / f"rank1_edit_{task}_Qwen3-8B_{variant}_n{n_users}.json")
-    return curve(d["results"], d["results"][0]["metric"]) if d else {}
-
-
-def collect_routing(task: str, variant: str, n_users: int,
-                    tau: float | None) -> dict[float, float]:
-    if tau is None:
-        return {}
-    d = load_json(OPERATORS_DIR / f"routing_{task}_Qwen3-8B_{variant}_n{n_users}.json")
+def collect_routing(task: str, n_users: int) -> dict[float, dict[float, float]]:
+    p = ROOT / "results/operators" / f"routing_{task}_Qwen3-8B_template_n{n_users}.json"
+    d = load_json(p)
     if not d:
         return {}
     metric = d["grid"][0]["metric"]
-    return {g["alpha"]: primary_value(metric, g["value"])
-            for g in d["grid"] if g["tau"] == tau}
+    out: dict[float, dict[float, float]] = {}
+    for g in d["grid"]:
+        out.setdefault(g["tau"], {})[g["alpha"]] = primary(metric, g["value"])
+    return out
 
 
-def line(ax, points: dict[float, float], **kwargs):
-    if points:
-        xs = sorted(points)
-        ax.plot(xs, [points[x] for x in xs], **kwargs)
+def collect_rank1(task: str, n_users: int) -> dict[float, float]:
+    p = ROOT / "results/operators" / \
+        f"rank1_edit_{task}_Qwen3-8B_template_n{n_users}.json"
+    d = load_json(p)
+    if not d:
+        return {}
+    metric = d["results"][0]["metric"]
+    return {r["alpha"]: primary(metric, r["value"]) for r in d["results"]}
 
 
-def plot_panel(ax, panel: dict, metric: str):
-    task, variant, n_users = panel["task"], panel["variant"], panel["n_users"]
+def plot_single_task(ax, task: str, n_users: int, metric_name: str,
+                     additive_baseline: dict[float, float], zs: float):
+    proj = collect_proj(task, n_users)
+    routing = collect_routing(task, n_users)
+    rank1 = collect_rank1(task, n_users)
 
-    line(ax, panel["additive"] or {}, marker="x", linewidth=2, color="black",
-         label="Additive (baseline)")
-    for k, points in sorted(collect_proj(task, variant, n_users).items()):
-        line(ax, points, marker="o", linewidth=1.5, color=PROJ_COLORS[k],
-             label=f"Op1 proj_nuisance k={k}")
-    line(ax, collect_rank1(task, variant, n_users), marker="s", linewidth=1.6,
-         color="#2980b9", label="Op2 rank-1 edit")
-    line(ax, collect_routing(task, variant, n_users, panel["routing_tau"]),
-         marker="d", linewidth=1.6, color="#27ae60",
-         label=rf"Op3 routing $\tau{{=}}{panel['routing_tau']}$")
+    # Additive baseline
+    if additive_baseline:
+        xs = sorted(additive_baseline)
+        ys = [additive_baseline[a] for a in xs]
+        ax.plot(xs, ys, marker="x", linewidth=2, color="black",
+                label="Additive (baseline)")
 
-    ax.axhline(panel["zs"], linestyle=":", color="gray", alpha=0.7,
-               label=f"Zero-shot ({panel['zs']:.3f})")
+    # Op1: best k each (k=5 typically)
+    colors = {1: "#ffa07a", 5: "#e74c3c", 10: "#7b241c"}
+    for k, accs in sorted(proj.items()):
+        xs = sorted(accs)
+        ys = [accs[a] for a in xs]
+        ax.plot(xs, ys, marker="o", linewidth=1.6,
+                color=colors.get(k, "gray"), label=f"Op1 proj_nuisance k={k}")
+
+    # Op2: rank-1 edit
+    if rank1:
+        xs = sorted(rank1)
+        ys = [rank1[a] for a in xs]
+        ax.plot(xs, ys, marker="s", linewidth=1.6, color="#2980b9",
+                label="Op2 rank-1 edit")
+
+    # Op3: routing (best τ — pick the one with largest change from ZS)
+    if routing:
+        # Pick τ=0 (least restrictive) for visualisation
+        if 0.0 in routing:
+            xs = sorted(routing[0.0])
+            ys = [routing[0.0][a] for a in xs]
+            ax.plot(xs, ys, marker="d", linewidth=1.6, color="#27ae60",
+                    label=r"Op3 routing $\tau{=}0$")
+
+    ax.axhline(zs, linestyle=":", color="gray", alpha=0.7, label=f"Zero-shot ({zs:.3f})")
     ax.set_xlabel(r"$\alpha$  (steering scale)")
-    ax.set_ylabel(primary_label(metric))
-    ax.set_title(f"{task} {variant} (n={n_users})")
+    ax.set_ylabel(metric_name)
+    ax.set_title(f"{task} (n={n_users})")
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8, loc="best")
 
 
 def main():
     fig, axes = plt.subplots(2, 2, figsize=(13, 9))
-    for ax, panel in zip(axes.ravel(), PANELS):
-        metric = "accuracy" if panel["task"] == "LaMP-2" else "rouge"
-        plot_panel(ax, panel, metric)
 
-    plt.suptitle("Alternative steering operators vs. additive baseline "
-                 "(Qwen3-8B, layer 13, full unique-user samples)",
-                 fontsize=12, y=1.00)
+    # Panel A: LaMP-2 template (n=323)
+    plot_single_task(
+        axes[0, 0], "LaMP-2", n_users=323, metric_name="Accuracy",
+        additive_baseline={0.0: 0.582, 1.0: 0.557},
+        zs=0.582,
+    )
+    axes[0, 0].set_title("LaMP-2 template (n=323)")
+    # Panel B: LaMP-2 fact (n=323)
+    plot_lamp2_fact(axes[0, 1])
+    # Panel C: LaMP-7 template (n=1497)
+    plot_lamp7_template_n1497(axes[1, 0])
+    # Panel D: LaMP-7 fact (n=1497)
+    plot_lamp7_fact(axes[1, 1])
+
+    plt.suptitle(
+        "Alternative steering operators vs.\\ additive baseline "
+        "(Qwen3-8B, layer 13, full unique-user samples)",
+        fontsize=12, y=1.00,
+    )
     plt.tight_layout()
-    out = FIGURES / "fig_operators_comparison.pdf"
+    out = ROOT / "figures/fig_operators_comparison.pdf"
     out.parent.mkdir(exist_ok=True)
     plt.savefig(out, bbox_inches="tight", dpi=150)
     plt.close()
     print(f"saved {out}")
+
+
+def plot_lamp2_fact(ax):
+    """LaMP-2 fact n=323: Op1 (k=1,5,10), Op2, Op3 routing τ=0.25."""
+    p2 = ROOT / "results/operators/rank1_edit_LaMP-2_Qwen3-8B_fact_n323.json"
+    p3 = ROOT / "results/operators/routing_LaMP-2_Qwen3-8B_fact_n323.json"
+    # Override path for fact variant
+    proj_fact = {}
+    for k in [1, 5, 10]:
+        p = ROOT / f"results/operators/LaMP-2_Qwen3-8B_fact_proj_nuisance_k{k}_n323.json"
+        d = load_json(p)
+        if d:
+            proj_fact[k] = {r["alpha"]: r["value"]["accuracy"] for r in d["results"]}
+    colors = {1: "#ffa07a", 5: "#e74c3c", 10: "#7b241c"}
+    for k, accs in sorted(proj_fact.items()):
+        xs = sorted(accs); ys = [accs[a] for a in xs]
+        ax.plot(xs, ys, marker="o", linewidth=1.4,
+                color=colors.get(k, "gray"), label=f"Op1 proj k={k}")
+    d2 = load_json(p2)
+    if d2:
+        xs = [r["alpha"] for r in d2["results"]]
+        ys = [r["value"]["accuracy"] for r in d2["results"]]
+        ax.plot(xs, ys, marker="s", linewidth=1.6, color="#2980b9",
+                label="Op2 rank-1")
+    d3 = load_json(p3)
+    if d3:
+        # τ=0.25 row
+        row = {c["alpha"]: c["value"]["accuracy"] for c in d3["grid"] if c["tau"] == 0.25}
+        if row:
+            xs = sorted(row); ys = [row[a] for a in xs]
+            ax.plot(xs, ys, marker="d", linewidth=1.8, color="#27ae60",
+                    label=r"Op3 routing $\tau{=}0.25$")
+    ax.axhline(0.582, linestyle=":", color="gray", alpha=0.7, label="Zero-shot (0.582)")
+    ax.set_xlabel(r"$\alpha$  (steering scale)")
+    ax.set_ylabel("Accuracy")
+    ax.set_title("LaMP-2 fact (n=323)")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8, loc="best")
+
+
+def plot_lamp7_template_n1497(ax):
+    """LaMP-7 template n=1497: Op1 k=5, Op2."""
+    p1 = ROOT / "results/operators/LaMP-7_Qwen3-8B_template_proj_nuisance_k5_n1497.json"
+    p2 = ROOT / "results/operators/rank1_edit_LaMP-7_Qwen3-8B_template_n1497.json"
+    for path, marker, color, lbl in [
+        (p1, "o", "#e74c3c", "Op1 proj k=5"),
+        (p2, "s", "#2980b9", "Op2 rank-1"),
+    ]:
+        d = load_json(path)
+        if not d: continue
+        xs = [r["alpha"] for r in d["results"]]
+        ys = [r["value"]["ROUGE-L"] for r in d["results"]]
+        ax.plot(xs, ys, marker=marker, linewidth=1.6, color=color, label=lbl)
+    ax.axhline(0.4262, linestyle=":", color="gray", alpha=0.7,
+               label="Zero-shot (0.4262)")
+    ax.set_xlabel(r"$\alpha$  (steering scale)")
+    ax.set_ylabel("ROUGE-L")
+    ax.set_title("LaMP-7 template (n=1497)")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8, loc="best")
+
+
+def plot_lamp7_fact(ax):
+    """LaMP-7 fact n=1497: Op1 (k=1,5,10) + Op2."""
+    colors = {1: "#ffa07a", 5: "#e74c3c", 10: "#7b241c"}
+    for k in [1, 5, 10]:
+        p = ROOT / f"results/operators/LaMP-7_Qwen3-8B_fact_proj_nuisance_k{k}_n1497.json"
+        d = load_json(p)
+        if not d: continue
+        xs = [r["alpha"] for r in d["results"]]
+        ys = [r["value"]["ROUGE-L"] for r in d["results"]]
+        ax.plot(xs, ys, marker="o", linewidth=1.4,
+                color=colors.get(k, "gray"), label=f"Op1 proj k={k}")
+    p2 = ROOT / "results/operators/rank1_edit_LaMP-7_Qwen3-8B_fact_n1497.json"
+    d2 = load_json(p2)
+    if d2:
+        xs = [r["alpha"] for r in d2["results"]]
+        ys = [r["value"]["ROUGE-L"] for r in d2["results"]]
+        ax.plot(xs, ys, marker="s", linewidth=1.6, color="#2980b9",
+                label="Op2 rank-1")
+    zs = 0.4262
+    ax.axhline(zs, linestyle=":", color="gray", alpha=0.7, label=f"Zero-shot ({zs:.4f})")
+    ax.set_xlabel(r"$\alpha$  (steering scale)")
+    ax.set_ylabel("ROUGE-L")
+    ax.set_title("LaMP-7 fact (n=1497)")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8, loc="best")
 
 
 if __name__ == "__main__":

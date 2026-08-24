@@ -1,11 +1,3 @@
-import os
-
-# Both are only honoured before CUDA / the tokenizers threadpool come up, and
-# importing anything below pulls in torch. scripts/env.sh exports them too; this
-# keeps scripts correct when run without sourcing it.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
 from .persona_vectors import PersonaVectors, PersonaSteering, PersonaMonitor, get_decoder_layers
 from .dataset import LaMPDataset, task_info, TASKS
 from .metrics import (
@@ -18,6 +10,6 @@ from .inference import (
 )
 from .fact_extractor import (
     FactExtractor, format_profile_from_lamp,
-    FACT_EXTRACTION_PROMPT, DOMAIN_NEGATIVE_PROMPTS, TASK_FRAMING,
+    FACT_EXTRACTION_PROMPT, DOMAIN_NEGATIVE_PROMPTS,
 )
 from .runs import ROOT, RESULTS, FIGURES, best_layer

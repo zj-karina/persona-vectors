@@ -1,24 +1,32 @@
-"""Steering only the token positions that already point at the persona.
+"""Operator 3: token-selective steering via cosine-gate routing.
 
-Additive steering adds α·v_u at every position while decoding, but most
-positions are not about who the user is, so most of that is noise. This gates
-the injection on the cosine between the position's hidden state and the persona
-direction:
+Standard additive steering applies $h_l[t] \\mathrel{+}=\\alpha v_u$ at every
+token position $t$ during decoding.  Hypothesis: most positions are not
+"thinking about user identity" -- adding $v_u$ there is noise.  A simple
+gate selects only positions whose pre-injection hidden state has high
+projection on the persona direction:
 
-    h[t] += α·v_u   where   cos(h[t], v_u) > τ
+    gate_t = (h_l[t] · v_u) / (||v_u|| ||h_l[t]||)
+    h_l[t] += α v_u   if gate_t > τ else 0
 
-and sweeps (τ, α) for an operating point.
+Sweep $(\\tau, \\alpha)$ to find the operating point.
 
-    python experiments/operators/run_routing.py --task LaMP-7 --n_users 200
+Usage:
+    python experiments/operators/run_routing.py \\
+        --task LaMP-7 --variant template --layer_idx 13 \\
+        --taus 0.0 0.25 0.5 0.75 1.0 \\
+        --alphas 0.0 0.5 1.0 2.0 \\
+        --n_users 200
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -37,8 +45,16 @@ from src.persona_vectors import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Routing hook
+# ---------------------------------------------------------------------------
+
+
 class RoutingSteering:
-    """PersonaSteering with a per-token cosine gate."""
+    """Per-token gated additive steering.
+
+    Adds α v_u to position t only where  cos(h_l[t], v_u) > τ.
+    """
 
     def __init__(self, model, layer_idx: int):
         self.model = model
@@ -57,15 +73,17 @@ class RoutingSteering:
             return cache[key]
 
         def fwd_hook(module, inputs, output):
-            hidden = _layer_hidden(output)
-            v = vec_for(hidden.device, hidden.dtype)
-            # Gate in fp32 — an fp16 dot product over the hidden dim loses
-            # enough precision to move tokens across the threshold.
+            hidden = _layer_hidden(output)            # [B, T, H]
+            v = vec_for(hidden.device, hidden.dtype)  # [H]
+            v_norm = v.float().norm().clamp(min=1e-8)
+            # cosine of each token with v
             h32 = hidden.float()
-            v32 = v.float()
-            cos = (h32 @ v32) / (h32.norm(dim=-1) * v32.norm().clamp(min=1e-8)).clamp(min=1e-8)
-            mask = (cos > tau).to(hidden.dtype)
-            return _replace_layer_hidden(output, hidden + alpha * mask.unsqueeze(-1) * v)
+            h_norms = h32.norm(dim=-1, keepdim=True).clamp(min=1e-8)  # [B, T, 1]
+            dots = (h32 @ v.float())                                   # [B, T]
+            cos = dots / (h_norms.squeeze(-1) * v_norm)                # [B, T]
+            mask = (cos > tau).to(hidden.dtype)                        # [B, T]
+            hidden = hidden + alpha * mask.unsqueeze(-1) * v
+            return _replace_layer_hidden(output, hidden)
 
         handle = self._layers[self.layer_idx].register_forward_hook(fwd_hook)
         try:
@@ -74,26 +92,38 @@ class RoutingSteering:
             handle.remove()
 
 
+# ---------------------------------------------------------------------------
+# Eval loop with routing
+# ---------------------------------------------------------------------------
+
+
 @torch.no_grad()
 def eval_pair(
     model, tokenizer, samples, vectors, *,
     layer_idx: int, alpha: float, tau: float,
     max_new_tokens: int, chat_kwargs: dict, system_prompt: str,
 ) -> tuple[list[str], list[str], float]:
-    routing = RoutingSteering(model, layer_idx)
     preds, refs = [], []
+    routing = RoutingSteering(model, layer_idx)
     t0 = time.time()
     for i, (s, v) in enumerate(zip(samples, vectors)):
+        if alpha == 0:
+            ctx = None
+        else:
+            ctx = routing.hook(torch.from_numpy(v), alpha=alpha, tau=tau)
+
         prompt = build_chat_prompt(tokenizer, s["input_text"], system_prompt, chat_kwargs)
         enc = tokenizer(prompt, return_tensors="pt", truncation=True,
                         max_length=1024).to(next(model.parameters()).device)
 
-        gate = (nullcontext() if alpha == 0
-                else routing.hook(torch.from_numpy(v), alpha=alpha, tau=tau))
-        with gate:
+        if ctx is None:
             out = model.generate(**enc, max_new_tokens=max_new_tokens,
                                  do_sample=False, pad_token_id=tokenizer.pad_token_id)
-
+        else:
+            with ctx:
+                out = model.generate(**enc, max_new_tokens=max_new_tokens,
+                                     do_sample=False,
+                                     pad_token_id=tokenizer.pad_token_id)
         new_tokens = out[0, enc["input_ids"].shape[1]:]
         preds.append(tokenizer.decode(new_tokens, skip_special_tokens=True).strip())
         refs.append(s["output_text"].strip())
@@ -103,6 +133,9 @@ def eval_pair(
 
 
 def main():
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
     ap.add_argument("--task", default="LaMP-7")
@@ -110,20 +143,20 @@ def main():
     ap.add_argument("--variant", choices=["template", "fact"], default="template")
     ap.add_argument("--taus", type=float, nargs="+",
                     default=[0.0, 0.25, 0.5, 0.75, 1.0])
-    ap.add_argument("--alphas", type=float, nargs="+", default=[0.0, 0.5, 1.0, 2.0])
+    ap.add_argument("--alphas", type=float, nargs="+",
+                    default=[0.0, 0.5, 1.0, 2.0])
     ap.add_argument("--n_users", type=int, default=200)
     ap.add_argument("--vectors_npz", default=None)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--output_dir", default="results/operators")
     args = ap.parse_args()
 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
+    torch.manual_seed(args.seed); np.random.seed(args.seed)
 
     short = args.model.split("/")[-1]
     if args.vectors_npz is None:
         args.vectors_npz = str(ROOT / "results/positive_control"
-                               / f"vectors_{short}_{args.task}.npz")
+                                / f"vectors_{short}_{args.task}.npz")
 
     info = task_info(args.task)
     metric = info["metric"]
@@ -133,7 +166,8 @@ def main():
     print(f"=== routing on {args.model}/{args.task}/{args.variant} ===")
     print(f"  layer={args.layer_idx} τ={args.taus} α={args.alphas} n={args.n_users}")
 
-    vectors = np.load(args.vectors_npz)[args.variant][: args.n_users]
+    arrs = np.load(args.vectors_npz)
+    vectors = arrs[args.variant][: args.n_users]
 
     dataset = LaMPDataset(task=args.task, split="val", n_samples=args.n_users,
                           data_dir=str(ROOT / "data"), unique_users=True)

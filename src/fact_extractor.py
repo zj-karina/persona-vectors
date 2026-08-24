@@ -1,12 +1,15 @@
-"""Building per-user artifacts from concrete facts instead of a fixed template.
+"""Local-LLM-based fact extraction from LaMP user profiles.
 
-The positive prompt the dataset builds is boilerplate ("You are an author whose
-past work is exemplified by...") with one profile item pasted in. Here the same
-model that will be steered first reads a user's LaMP profile and writes five
-distinguishing facts about them, and those become the positive prompt; the
-negative is a domain-matched description of an average user of that task.
+Used for the positive-control experiment: replace the generic template
+positive prompt (``You are an author whose past work is...``) with concrete,
+user-specific facts elicited from the same Qwen3-8B that we steer.
 
-Everything runs locally — one extra generate() per user, no external API.
+No external APIs. The fact-extraction LLM is the same model already loaded
+for steering, so the cost is one extra `generate()` call per user.
+
+Hypothesis: the rank-2 collapse observed for template-based vectors is a
+template confound — it should disappear (or shrink) when positive prompts
+contain *concrete user facts* rather than a fixed boilerplate.
 """
 
 from __future__ import annotations
@@ -16,6 +19,12 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 import torch
+
+
+# ---------------------------------------------------------------------------
+# Prompts
+# ---------------------------------------------------------------------------
+
 
 FACT_EXTRACTION_PROMPT = """Analyze this user's behavioral history and identify what makes them unique.
 
@@ -31,6 +40,7 @@ Rules:
 
 Facts:
 1."""
+
 
 DOMAIN_NEGATIVE_PROMPTS: dict[str, str] = {
     "LaMP-1": (
@@ -60,7 +70,13 @@ DOMAIN_NEGATIVE_PROMPTS: dict[str, str] = {
     ),
 }
 
-TASK_FRAMING: dict[str, str] = {
+
+# ---------------------------------------------------------------------------
+# Profile formatting
+# ---------------------------------------------------------------------------
+
+
+_TASK_FRAMING: dict[str, str] = {
     "LaMP-1": "Papers this researcher has cited in past work:",
     "LaMP-2": "Articles this user has previously categorised:",
     "LaMP-3": "Reviews this user has written for products:",
@@ -76,28 +92,35 @@ def format_profile_from_lamp(
     max_items: int = 8,
     max_item_chars: int = 300,
 ) -> str:
-    """Numbered profile block for the fact-extraction prompt.
+    """Format a LaMP profile (list of strings or dicts) into a numbered text
+    block suitable for fact extraction.
 
-    The `_titles_p6.json` files store profiles as pre-formatted strings
-    (`TITLE: "..."`, `REVIEW: ...`), so those only need truncating. Raw LaMP
-    dicts are flattened to a key: value list first.
+    The LaMP `_titles_p6.json` files we use store profiles as pre-formatted
+    strings (e.g. ``TITLE: "..."``, ``REVIEW: ...``) — so we just truncate
+    and number them. Dict variants (raw LaMP) are flattened to a key:value list.
     """
-    lines = []
+    framing = _TASK_FRAMING.get(task, "User's history items:")
+    lines: list[str] = []
     for i, item in enumerate(profile_items[:max_items]):
         if isinstance(item, dict):
-            text = " | ".join(
+            kv = " | ".join(
                 f"{k}: {str(v)[:120]}"
                 for k, v in item.items() if k not in ("id", "user_id")
             )
+            text = kv[:max_item_chars]
         else:
-            text = str(item)
-        lines.append(f"  {i+1}. {text[:max_item_chars]}")
-    framing = TASK_FRAMING.get(task, "User's history items:")
+            text = str(item)[:max_item_chars]
+        lines.append(f"  {i+1}. {text}")
     return f"{framing}\n\n" + "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Extractor
+# ---------------------------------------------------------------------------
+
+
 class FactExtractor:
-    """Turns a user's LaMP profile into five distinguishing facts."""
+    """Use a local LLM to summarise a user's LaMP profile into 5 distinguishing facts."""
 
     def __init__(self, model, tokenizer, task: str, max_new_tokens: int = 300):
         self.model = model
@@ -109,11 +132,14 @@ class FactExtractor:
 
     @torch.no_grad()
     def extract_facts(self, profile_items: Sequence[str | dict]) -> dict:
+        """Run one local generate() call to get user-specific facts."""
         profile_text = format_profile_from_lamp(profile_items, self.task)
         user_msg = FACT_EXTRACTION_PROMPT.format(profile_text=profile_text)
 
+        # Qwen3 thinking-mode disable (paper said: skip <think> for short outputs).
         chat_kwargs = {}
-        if "qwen3" in getattr(self.tokenizer, "name_or_path", "").lower():
+        model_name = getattr(self.tokenizer, "name_or_path", "")
+        if "qwen3" in model_name.lower():
             chat_kwargs["enable_thinking"] = False
             sys_msg = "You are a careful analyst. /no_think"
         else:
@@ -121,6 +147,7 @@ class FactExtractor:
 
         messages = [{"role": "system", "content": sys_msg},
                     {"role": "user", "content": user_msg}]
+
         if self.tokenizer.chat_template:
             prompt = self.tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True, **chat_kwargs,
@@ -138,10 +165,11 @@ class FactExtractor:
         new_tokens = out[0, enc["input_ids"].shape[1]:]
         text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
+        # Strip stray <think> blocks just in case.
         if "<think>" in text:
             text = text.split("</think>")[-1].strip()
-        # The prompt ends with "1.", so the continuation starts mid-way through
-        # the first fact unless the model repeats the number itself.
+
+        # The prompt ends with "1.", so prepend that to capture the first fact.
         if not text.startswith("1."):
             text = "1. " + text
 
@@ -169,10 +197,8 @@ class FactExtractor:
         n_users: int = 30,
         cache_path: str | Path | None = None,
     ) -> list[dict]:
-        """Attach fact-based positive/negative prompts to each sample.
-
-        Facts are cached by sample id and rewritten after every new user, so an
-        interrupted extraction run resumes instead of starting over.
+        """For each sample, attach `fact_positive_prompts`, `fact_negative_prompts`
+        and the raw extracted facts. Caches results keyed by sample id.
         """
         cache: dict[str, dict] = {}
         if cache_path and Path(cache_path).exists():
@@ -180,7 +206,7 @@ class FactExtractor:
                 cache = json.load(f)
             print(f"[fact-cache] loaded {len(cache)} entries from {cache_path}")
 
-        out = []
+        out: list[dict] = []
         samples = list(samples)[:n_users]
         for i, sample in enumerate(samples):
             user_id = str(sample.get("id") or sample.get("user_id") or i)

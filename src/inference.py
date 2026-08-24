@@ -1,4 +1,4 @@
-"""Model loading and persona-steered generation."""
+"""Shared inference helpers — model load, persona-steered generate, eval loop."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def load_model_and_tokenizer(
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        dtype=dtype,
+        dtype=dtype,                    # torch_dtype= is deprecated since 4.56
         device_map=device_map,
         attn_implementation=attn_implementation,
     )
@@ -40,11 +40,14 @@ def load_model_and_tokenizer(
 
 
 def chat_kwargs_for(model_name: str) -> dict:
-    """Chat-template kwargs that keep Qwen3 out of thinking mode."""
-    return {"enable_thinking": False} if is_qwen3(model_name) else {}
+    """Return chat_template kwargs that disable Qwen3 thinking mode."""
+    if is_qwen3(model_name):
+        return {"enable_thinking": False}
+    return {}
 
 
 def system_prompt_for(model_name: str) -> str:
+    """Default system prompt; for Qwen3 includes /no_think to skip CoT."""
     if is_qwen3(model_name):
         return "You are a helpful assistant. /no_think"
     return "You are a helpful assistant."
@@ -52,7 +55,7 @@ def system_prompt_for(model_name: str) -> str:
 
 def build_chat_prompt(tokenizer, user_input: str, system_prompt: str | None,
                       chat_kwargs: dict | None = None) -> str:
-    """Chat-formatted prompt, or the bare input for base models with no template."""
+    """Chat-formatted prompt, or the bare input for a base model with no template."""
     if not tokenizer.chat_template:
         return user_input
     messages = []
@@ -78,14 +81,15 @@ def persona_steered_generate(
     chat_kwargs: dict | None = None,
     system_prompt: str | None = None,
 ) -> str:
-    """Generate one LaMP answer, steered if a vector, layer and non-zero α are given."""
+    """Generate one LaMP answer; if persona_vector & alpha != 0, apply steering."""
     prompt = build_chat_prompt(tokenizer, user_input, system_prompt, chat_kwargs)
+
     enc = tokenizer(prompt, return_tensors="pt", truncation=True,
                     max_length=max_input_len).to(next(model.parameters()).device)
 
-    if persona_vector is not None and layer_idx is not None and abs(alpha) > 0.0:
-        ctx = PersonaSteering(model, layer_idx=layer_idx).hook(
-            persona_vector, alpha=alpha, position="all")
+    if persona_vector is not None and abs(alpha) > 0.0 and layer_idx is not None:
+        steering = PersonaSteering(model, layer_idx=layer_idx)
+        ctx = steering.hook(persona_vector, alpha=alpha, position="all")
     else:
         ctx = nullcontext()
 

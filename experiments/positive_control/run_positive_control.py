@@ -1,21 +1,34 @@
-"""Does the template cause the collapse? Template vs fact-based artifacts.
+"""Positive control: template-based vs fact-based persona vectors.
 
-The template positive prompt is the same sentence for every user with one
-profile item pasted in, so a low-rank vector cloud could be measuring the
-template rather than the residual stream. The control swaps that prompt for five
-concrete facts the model writes about each user and compares both paths on
-geometry (cosine, PCA rank, 2-PC variance) and on downstream accuracy.
+Tests whether the rank-2 collapse of template-based vectors (Section "Phase 2"
+of the main results) is due to the *artifact construction* — i.e., the fixed
+positive-prompt template — rather than a fundamental property of the residual
+stream geometry.
 
-Fact extraction, vector extraction and inference all run on the same Qwen3-8B.
+Construction:
+    A) Template path  — uses the boilerplate positive prompts the dataset
+                        already builds from the user's profile.
+    B) Fact-based     — same model produces 5 specific facts per user from
+                        their LaMP profile, and those facts become the
+                        positive system prompt.
 
+We compare:
+    - Geometry: pairwise cosine, PCA(2), 90%-variance rank.
+    - Downstream accuracy: zero-shot vs steered (both methods).
+
+Same Qwen3-8B is used for fact extraction, vector extraction, and downstream
+inference. No external APIs.
+
+Usage:
     python experiments/positive_control/run_positive_control.py \
-        --task LaMP-2 --layer_idx 13 --n_users 30
+        --model Qwen/Qwen3-8B --task LaMP-2 --layer_idx 13 --n_users 30
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -23,7 +36,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.decomposition import PCA
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -34,6 +46,11 @@ from src import (
     load_model_and_tokenizer, persona_steered_generate, primary_value,
     system_prompt_for, task_info,
 )
+
+
+# ---------------------------------------------------------------------------
+# Vector extraction across N users
+# ---------------------------------------------------------------------------
 
 
 @torch.no_grad()
@@ -59,8 +76,7 @@ def extract_vectors(
             )
             out.append(v.cpu().float().numpy())
         except RuntimeError as e:
-            # Zero-fill rather than skip: the two paths must stay index-aligned
-            # so the same user can be compared across them.
+            # zero-fill, not skip: template and fact must stay index-aligned
             print(f"  user {i}: extract failed ({e}) — zero-filling")
             out.append(np.zeros(model.config.hidden_size, dtype=np.float32))
         if (i + 1) % 5 == 0:
@@ -68,7 +84,14 @@ def extract_vectors(
     return np.stack(out, axis=0)
 
 
+# ---------------------------------------------------------------------------
+# Geometry analysis
+# ---------------------------------------------------------------------------
+
+
 def compute_geometry(vectors: np.ndarray, label: str) -> dict:
+    from sklearn.decomposition import PCA
+
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     normalized = vectors / np.maximum(norms, 1e-8)
     cos = normalized @ normalized.T
@@ -80,16 +103,17 @@ def compute_geometry(vectors: np.ndarray, label: str) -> dict:
     rank_95 = int(np.searchsorted(cumvar, 0.95)) + 1
     var_2pc = float(sum(pca.explained_variance_ratio_[:2]))
 
-    if rank_90 <= 3 and off_diag.mean() > 0.6:
-        verdict = "TEMPLATE COLLAPSE — rank-2 cluster"
-    elif off_diag.mean() < 0.4:
-        verdict = "USER-SPECIFIC ✓"
-    else:
-        verdict = "PARTIAL — some user signal"
+    verdict = (
+        "TEMPLATE COLLAPSE — rank-2 cluster"
+        if rank_90 <= 3 and off_diag.mean() > 0.6 else
+        "USER-SPECIFIC ✓"
+        if off_diag.mean() < 0.4 else
+        "PARTIAL — some user signal"
+    )
 
     print(f"\n=== {label} (n={len(vectors)}) ===")
     print(f"  cosine off-diag: mean={off_diag.mean():.3f} std={off_diag.std():.3f} "
-          f"median={np.median(off_diag):.3f}  frac>0.8={(off_diag > 0.8).mean():.2f}")
+          f"median={np.median(off_diag):.3f}  frac>0.8={ (off_diag>0.8).mean():.2f}")
     print(f"  PCA: rank@90%={rank_90}, rank@95%={rank_95}, var_2pc={var_2pc:.1%}")
     print(f"  verdict: {verdict}")
 
@@ -117,6 +141,11 @@ def compute_geometry(vectors: np.ndarray, label: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Downstream evaluation with steering
+# ---------------------------------------------------------------------------
+
+
 @torch.no_grad()
 def run_steering_eval(
     model, tokenizer, samples, vectors: np.ndarray, *,
@@ -127,11 +156,11 @@ def run_steering_eval(
 ) -> tuple[list[str], list[str]]:
     preds, refs = [], []
     for i, (s, v) in enumerate(zip(samples, vectors)):
+        v_t = torch.from_numpy(v) if alpha != 0 else None
         pred = persona_steered_generate(
             model, tokenizer,
             user_input=s["input_text"],
-            persona_vector=torch.from_numpy(v) if alpha != 0 else None,
-            layer_idx=layer_idx, alpha=alpha,
+            persona_vector=v_t, layer_idx=layer_idx, alpha=alpha,
             max_new_tokens=max_new_tokens,
             chat_kwargs=chat_kwargs, system_prompt=system_prompt,
         )
@@ -142,7 +171,15 @@ def run_steering_eval(
     return preds, refs
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
 def main():
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
     ap.add_argument("--task", default="LaMP-2")
@@ -164,16 +201,21 @@ def main():
     print(f"=== Positive control: {args.model} on {args.task} ===")
     print(f"  layer={args.layer_idx} α={args.alpha} n_users={args.n_users}")
 
+    # ---- Load model + tokenizer once
     model, tokenizer = load_model_and_tokenizer(args.model)
     n_layers = len(get_decoder_layers(model))
     if not (0 <= args.layer_idx < n_layers):
         raise ValueError(f"layer_idx {args.layer_idx} out of range [0, {n_layers})")
 
+    # ---- Dataset (already builds template positive/negative prompts).
+    # unique_users=True deduplicates by profile hash so 30 means 30 *distinct*
+    # users (LaMP-2 has ~5 test items per user; LaMP-7 is already 1:1).
     dataset = LaMPDataset(task=args.task, split="val", n_samples=args.n_users,
                           data_dir=str(ROOT / "data"), unique_users=True)
     samples = list(dataset)
     print(f"  loaded {len(samples)} unique-user samples")
 
+    # ---- Step 1: extract facts via local Qwen
     print("\n[1] Extracting facts via local Qwen...")
     fact_cache = ROOT / args.output_dir / f"cache_facts_{args.task}.json"
     extractor = FactExtractor(model=model, tokenizer=tokenizer, task=args.task)
@@ -181,6 +223,7 @@ def main():
         samples=samples, n_users=args.n_users, cache_path=str(fact_cache),
     )
 
+    # ---- Step 2: template-based vectors
     print(f"\n[2] Template-based vector extraction (layer {args.layer_idx})...")
     template_vectors = extract_vectors(
         model, tokenizer, samples_enriched,
@@ -190,6 +233,7 @@ def main():
         chat_kwargs=chat_kwargs,
     )
 
+    # ---- Step 3: fact-based vectors
     print(f"\n[3] Fact-based vector extraction (layer {args.layer_idx})...")
     fact_vectors = extract_vectors(
         model, tokenizer, samples_enriched,
@@ -199,39 +243,53 @@ def main():
         chat_kwargs=chat_kwargs,
     )
 
+    # ---- Step 4: geometry
     print("\n[4] Geometry comparison")
     template_geo = compute_geometry(template_vectors, "Template-based")
     fact_geo = compute_geometry(fact_vectors, "Fact-based")
 
+    # ---- Step 5: zero-shot baseline + downstream steering
     print("\n[5] Downstream evaluation")
-    runs = {}
-    for label, vectors, alpha in (
-        ("zero_shot", np.zeros_like(template_vectors), 0.0),
-        ("template_steering", template_vectors, args.alpha),
-        ("fact_steering", fact_vectors, args.alpha),
-    ):
-        preds, refs = run_steering_eval(
-            model, tokenizer, samples_enriched, vectors,
-            layer_idx=args.layer_idx, alpha=alpha,
-            chat_kwargs=chat_kwargs, system_prompt=system_prompt,
-            max_new_tokens=info["max_new_tokens"], label=label,
-        )
-        value = compute_metric(metric, preds, refs)
-        runs[label] = {"value": value, "primary": primary_value(metric, value)}
-        print(f"  {label}: {value}")
+    zs_preds, zs_refs = run_steering_eval(
+        model, tokenizer, samples_enriched, np.zeros_like(template_vectors),
+        layer_idx=args.layer_idx, alpha=0.0,
+        chat_kwargs=chat_kwargs, system_prompt=system_prompt,
+        max_new_tokens=info["max_new_tokens"], label="zs",
+    )
+    zs_metric = compute_metric(metric, zs_preds, zs_refs)
+    zs_p = primary_value(metric, zs_metric)
+    print(f"  zero-shot: {zs_metric}")
 
-    zs_p = runs["zero_shot"]["primary"]
-    sign = 1 if higher_is_better(metric) else -1
-    for label in ("template_steering", "fact_steering"):
-        runs[label]["delta"] = sign * (runs[label]["primary"] - zs_p)
+    tmpl_preds, tmpl_refs = run_steering_eval(
+        model, tokenizer, samples_enriched, template_vectors,
+        layer_idx=args.layer_idx, alpha=args.alpha,
+        chat_kwargs=chat_kwargs, system_prompt=system_prompt,
+        max_new_tokens=info["max_new_tokens"], label="template",
+    )
+    tmpl_metric = compute_metric(metric, tmpl_preds, tmpl_refs)
+    tmpl_p = primary_value(metric, tmpl_metric)
+    print(f"  template steering: {tmpl_metric}")
 
+    fact_preds, fact_refs = run_steering_eval(
+        model, tokenizer, samples_enriched, fact_vectors,
+        layer_idx=args.layer_idx, alpha=args.alpha,
+        chat_kwargs=chat_kwargs, system_prompt=system_prompt,
+        max_new_tokens=info["max_new_tokens"], label="fact",
+    )
+    fact_metric_v = compute_metric(metric, fact_preds, fact_refs)
+    fact_p = primary_value(metric, fact_metric_v)
+    print(f"  fact steering: {fact_metric_v}")
+
+    # ---- Step 6: save
     out_dir = ROOT / args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # plot_comparison.py replots from these without re-running extraction.
+    # Save raw vectors as .npz so plot_comparison.py can re-use them
     npz_path = out_dir / f"vectors_{args.model.split('/')[-1]}_{args.task}.npz"
-    np.savez_compressed(npz_path, template=template_vectors, fact=fact_vectors)
+    np.savez_compressed(npz_path,
+                        template=template_vectors, fact=fact_vectors)
 
+    sign = 1 if higher_is_better(metric) else -1   # MAE: lower is better
     payload = {
         "model": args.model,
         "task": args.task,
@@ -251,7 +309,13 @@ def main():
                 and fact_geo["pca"]["rank_90pct"] > template_geo["pca"]["rank_90pct"]
             ),
         },
-        "downstream": runs,
+        "downstream": {
+            "zero_shot":         {"value": zs_metric,  "primary": zs_p},
+            "template_steering": {"value": tmpl_metric, "primary": tmpl_p,
+                                  "delta": sign * (tmpl_p - zs_p)},
+            "fact_steering":     {"value": fact_metric_v, "primary": fact_p,
+                                  "delta": sign * (fact_p - zs_p)},
+        },
         "samples_for_inspection": [
             {"id": s.get("id"), "facts": s["extracted_facts"]}
             for s in samples_enriched[:3]
@@ -272,11 +336,9 @@ def main():
     print(f"  template rank@90%:     {template_geo['pca']['rank_90pct']}")
     print(f"  fact-based rank@90%:   {fact_geo['pca']['rank_90pct']}")
     print(f"  hypothesis supported:  {payload['geometry']['hypothesis_supported']}")
-    print(f"  ZS / tmpl / fact:      {zs_p:.3f} / "
-          f"{runs['template_steering']['primary']:.3f} / "
-          f"{runs['fact_steering']['primary']:.3f}")
-    print(f"  Δ vs ZS:  template={runs['template_steering']['delta']:+.3f}  "
-          f"fact={runs['fact_steering']['delta']:+.3f}")
+    print(f"  ZS / tmpl / fact:      {zs_p:.3f} / {tmpl_p:.3f} / {fact_p:.3f}")
+    print(f"  ΔRetrieval:  template={payload['downstream']['template_steering']['delta']:+.3f}  "
+          f"fact={payload['downstream']['fact_steering']['delta']:+.3f}")
     print(f"\nSaved {out_path}")
     print(f"Saved {npz_path}")
 

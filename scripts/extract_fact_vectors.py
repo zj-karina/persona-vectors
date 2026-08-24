@@ -1,14 +1,14 @@
-"""Extract fact-based persona vectors, mirroring extract_template_vectors.py.
+"""Standalone fact-vector extraction.  Mirrors `extract_template_vectors.py`
+but uses local-LLM-generated fact prompts (cached in
+`results/positive_control/cache_facts_<task>.json`).
 
-Reuses the fact cache written by the positive-control run and only extracts
-users the .npz does not already cover, so re-running is cheap.
-
-    python scripts/extract_fact_vectors.py --task LaMP-2 --n_users 100
+Idempotent: reuses existing template + fact vectors and the fact cache.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -26,6 +26,9 @@ from src import (
 
 
 def main():
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
     ap.add_argument("--task", default="LaMP-2")
@@ -37,17 +40,22 @@ def main():
     args = ap.parse_args()
 
     short = args.model.split("/")[-1]
-    control_dir = ROOT / "results/positive_control"
-    out_path = Path(args.output_npz or control_dir / f"vectors_{short}_{args.task}.npz")
-    cache_path = Path(args.cache_path or control_dir / f"cache_facts_{args.task}.json")
+    if args.output_npz is None:
+        args.output_npz = str(ROOT / "results/positive_control"
+                               / f"vectors_{short}_{args.task}.npz")
+    if args.cache_path is None:
+        args.cache_path = str(ROOT / "results/positive_control"
+                               / f"cache_facts_{args.task}.json")
 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
+    torch.manual_seed(args.seed); np.random.seed(args.seed)
 
+    chat_kwargs = chat_kwargs_for(args.model)
+
+    out_path = Path(args.output_npz)
     existing = {}
     if out_path.exists():
         d = np.load(out_path)
-        existing = {k: d[k] for k in d}
+        existing = {k: d[k] for k in d.keys()}
         print(f"  loaded existing template={len(existing.get('template', []))} "
               f"fact={len(existing.get('fact', []))}")
 
@@ -63,21 +71,23 @@ def main():
         print(f"  only {len(samples)} unique users available; capping.")
         args.n_users = len(samples)
 
+    # Need ALL samples (0..n) so users align with template vectors
     print(f"  extracting fact vectors for users {n_existing}..{args.n_users-1}")
+
     model, tokenizer = load_model_and_tokenizer(args.model)
 
-    # Facts are built for users 0..n so the indices line up with the template
-    # vectors; the cache makes the already-done ones free.
+    # 1) Build / extend fact cache
     fe = FactExtractor(model=model, tokenizer=tokenizer, task=args.task)
     enriched = fe.build_artifacts_for_dataset(
-        samples=samples, n_users=args.n_users, cache_path=str(cache_path),
+        samples=samples, n_users=args.n_users, cache_path=args.cache_path,
     )
 
+    # 2) Extract activation vectors using fact prompts
     pv = PersonaVectors(
         model=model, tokenizer=tokenizer, layer_idx=args.layer_idx,
-        max_new_tokens=50, chat_template_kwargs=chat_kwargs_for(args.model),
+        max_new_tokens=50, chat_template_kwargs=chat_kwargs,
     )
-    new_vectors = []
+    new_vectors: list[np.ndarray] = []
     t0 = time.time()
     for i in range(n_existing, args.n_users):
         s = enriched[i]
@@ -94,20 +104,23 @@ def main():
         done = i - n_existing + 1
         if done % 5 == 0 or i == args.n_users - 1:
             elapsed = time.time() - t0
-            rate = elapsed / done
+            rate = elapsed / max(done, 1)
+            eta = rate * (args.n_users - i - 1)
             print(f"  fact {i+1}/{args.n_users}  "
-                  f"({elapsed:.0f}s, rate={rate:.1f}s/u, "
-                  f"eta={rate * (args.n_users - i - 1):.0f}s)")
+                  f"({elapsed:.0f}s, rate={rate:.1f}s/u, eta={eta:.0f}s)")
 
-    merged = np.stack(new_vectors, axis=0)
+    new_vectors = np.stack(new_vectors, axis=0)
+
     if "fact" in existing:
-        merged = np.concatenate([existing["fact"], merged], axis=0)
-    save = {"fact": merged}
+        merged_f = np.concatenate([existing["fact"], new_vectors], axis=0)
+    else:
+        merged_f = new_vectors
+    save = {"fact": merged_f}
     if "template" in existing:
-        save["template"] = existing["template"]
+        save["template"] = existing["template"]   # untouched
     np.savez_compressed(out_path, **save)
     print(f"\nsaved {out_path}  "
-          f"(template: {len(save.get('template', []))}, fact: {len(merged)})")
+          f"(template: {len(save.get('template', []))}, fact: {len(merged_f)})")
 
 
 if __name__ == "__main__":
